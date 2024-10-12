@@ -30,6 +30,14 @@ struct Args {
     /// Number of threads to use (optional)
     #[arg(short, long, default_value_t = 4, help = "Number of threads to use (optional)")]
     threads: usize,
+
+    /// Consider the '-' symbol (gap) in SNP detection
+    #[arg(short = 'g', long, help = "Consider the '-' symbol (gap) in SNP detection")]
+    include_gaps: bool,
+
+    /// Only consider A, T, G, C nucleotides in SNP detection
+    #[arg(short = 'a', long, help = "Only consider A, T, G, C nucleotides in SNP detection")]
+    only_atgc: bool,
 }
 
 static NUCLEOTIDE_BITS: [u8; 256] = {
@@ -63,54 +71,64 @@ fn main() -> io::Result<()> {
     let input_filename = args.fasta;
     let output_filename = args.output;
     let num_threads = args.threads;
+    let include_gaps = args.include_gaps;
+    let only_atgc = args.only_atgc;
 
-    // Configure the number of threads for Rayon
-    rayon::ThreadPoolBuilder::new()
+    // Configurar un pool de hilos local para Rayon
+    let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(num_threads)
-        .build_global()
-        .unwrap();
+        .build()
+        .expect("Failed to build Rayon thread pool");
 
-    // Initialize system for RAM usage reporting
+    // Inicializar sistema para reportar uso de RAM
     let system = Arc::new(Mutex::new(System::new_all()));
 
-    // Step 1: Identify SNP positions
-    println!("Starting Step 1: Identifying SNP positions...");
-    let (snp_positions, total_sequences) = identify_snp_positions(&input_filename, &system)?;
-    println!(
-        "Step 1 Complete: Found {} SNP positions.",
-        snp_positions.len()
-    );
+    // Ejecutar el procesamiento dentro del pool de hilos
+    pool.install(|| {
+        // Paso 1: Identificar posiciones SNP
+        println!("Starting Step 1: Identifying SNP positions...");
+        let (snp_positions, total_sequences) =
+            identify_snp_positions(&input_filename, &system, include_gaps, only_atgc)
+                .expect("Failed to identify SNP positions");
+        println!(
+            "Step 1 Complete: Found {} SNP positions.",
+            snp_positions.len()
+        );
 
-    if snp_positions.is_empty() {
-        eprintln!("No SNPs found in the alignment.");
-        std::process::exit(0);
-    }
+        if snp_positions.is_empty() {
+            eprintln!("No SNPs found in the alignment.");
+            std::process::exit(0);
+        }
 
-    // Step 2: Extract SNPs and write to output
-    println!("Starting Step 2: Extracting SNPs and writing to output...");
-    extract_and_write_snps(
-        &input_filename,
-        &output_filename,
-        &snp_positions,
-        total_sequences,
-        &system,
-    )?;
-    println!("SNP alignment written to {}", output_filename);
+        // Paso 2: Extraer SNPs y escribir en el archivo de salida
+        println!("Starting Step 2: Extracting SNPs and writing to output...");
+        extract_and_write_snps(
+            &input_filename,
+            &output_filename,
+            &snp_positions,
+            total_sequences,
+            &system,
+        )
+        .expect("Failed to extract and write SNPs");
+        println!("SNP alignment written to {}", output_filename);
+    });
 
     Ok(())
 }
 
-/// Step 1: Identify SNP positions by iterating through all sequences
+/// Paso 1: Identificar posiciones SNP iterando a través de todas las secuencias
 fn identify_snp_positions(
     input_filename: &str,
     system: &Arc<Mutex<System>>,
+    include_gaps: bool,
+    only_atgc: bool,
 ) -> io::Result<(Vec<usize>, usize)> {
-    // Open the input FASTA file
+    // Abrir el archivo FASTA de entrada
     let input_file = File::open(input_filename)?;
-    let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file); // 16 MB buffer
+    let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file); // Buffer de 16 MB
     let fasta_reader = fasta::Reader::new(reader);
 
-    // Read the first sequence to initialize
+    // Leer la primera secuencia para inicializar
     let mut records = fasta_reader.records();
     let first_record = match records.next() {
         Some(Ok(rec)) => rec,
@@ -132,7 +150,7 @@ fn identify_snp_positions(
         seq_length
     );
 
-    // Initialize a progress spinner
+    // Inicializar un spinner de progreso
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
@@ -141,15 +159,15 @@ fn identify_snp_positions(
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    // Atomic counter for sequences processed (already processed first)
+    // Contador atómico para secuencias procesadas (ya se procesó la primera)
     let seq_counter = Arc::new(AtomicUsize::new(1));
 
-    // Reopen the FASTA file for processing all sequences
+    // Reabrir el archivo FASTA para procesar todas las secuencias
     let input_file = File::open(input_filename)?;
     let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file);
     let fasta_reader = fasta::Reader::new(reader);
 
-    // Process sequences in parallel using Rayon
+    // Procesar secuencias en paralelo usando Rayon
     let nucleotide_presence = fasta_reader
         .records()
         .par_bridge()
@@ -167,21 +185,33 @@ fn identify_snp_positions(
 
                 for (i, &nuc) in seq.iter().enumerate() {
                     let bits = nucleotide_to_bits(nuc);
-                    acc[i] |= bits;
+
+                    // Si solo se consideran ATGC, ignorar nucleótidos no estándar
+                    if only_atgc {
+                        // Verificar si el nucleótido es A, T, G o C
+                        if bits == 0b0001 || bits == 0b0010 || bits == 0b0100 || bits == 0b1000 {
+                            acc[i] |= bits;
+                        } else {
+                            // Ignorar nucleótidos no ATGC
+                            continue;
+                        }
+                    } else {
+                        acc[i] |= bits;
+                    }
                 }
 
-                // Increment the sequence counter
+                // Incrementar el contador de secuencias
                 let current = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
                 if current % 1000 == 0 {
                     pb.set_message(format!("{}", current));
                 }
 
-                // Report RAM usage every 100,000 sequences
+                // Reportar uso de RAM cada 100,000 secuencias
                 if current % 100_000 == 0 {
                     if let Ok(mut sys) = system.lock() {
                         sys.refresh_memory();
-                        let total_memory = sys.total_memory(); // in KB
-                        let used_memory = sys.used_memory(); // in KB
+                        let total_memory = sys.total_memory(); // en KB
+                        let used_memory = sys.used_memory(); // en KB
                         println!(
                             "[{}] Processed {} sequences. RAM Usage: {} KB used / {} KB total.",
                             Local::now().format("%Y-%m-%d %H:%M:%S"),
@@ -205,7 +235,7 @@ fn identify_snp_positions(
             },
         );
 
-    // Finalize the progress spinner
+    // Finalizar el spinner de progreso
     let total_sequences = seq_counter.load(Ordering::SeqCst);
     pb.finish_with_message(format!("{}", total_sequences));
     println!(
@@ -214,7 +244,7 @@ fn identify_snp_positions(
         total_sequences
     );
 
-    // Identify SNP positions
+    // Identificar posiciones SNP
     println!(
         "[{}] Identifying SNP positions...",
         Local::now().format("%Y-%m-%d %H:%M:%S")
@@ -223,10 +253,20 @@ fn identify_snp_positions(
         .par_iter()
         .enumerate()
         .filter_map(|(i, &bits)| {
-            if bits.count_ones() > 1 {
-                Some(i)
+            if include_gaps {
+                if bits.count_ones() > 1 {
+                    Some(i)
+                } else {
+                    None
+                }
             } else {
-                None
+                // Excluir el bit de gap (bit 5) de bits
+                let bits_without_gap = bits & 0b1111;
+                if bits_without_gap.count_ones() > 1 {
+                    Some(i)
+                } else {
+                    None
+                }
             }
         })
         .collect();
@@ -240,7 +280,7 @@ fn identify_snp_positions(
     Ok((snp_positions, total_sequences))
 }
 
-/// Step 2: Extract SNPs based on identified positions and write to output FASTA
+/// Paso 2: Extraer SNPs basados en las posiciones identificadas y escribir en el archivo FASTA de salida
 fn extract_and_write_snps(
     input_filename: &str,
     output_filename: &str,
@@ -248,19 +288,17 @@ fn extract_and_write_snps(
     total_sequences: usize,
     system: &Arc<Mutex<System>>,
 ) -> io::Result<()> {
-    // Open the input FASTA file again for the second step
+    // Abrir el archivo FASTA de entrada nuevamente para el segundo paso
     let input_file = File::open(input_filename)?;
-    let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file); // 16 MB buffer
+    let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file); // Buffer de 16 MB
     let fasta_reader = fasta::Reader::new(reader);
 
-    // Open the output FASTA file for writing
+    // Abrir el archivo FASTA de salida para escribir
     let output_file = File::create(output_filename)?;
-    let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, output_file); // 16 MB buffer
+    let writer = BufWriter::with_capacity(16 * 1024 * 1024, output_file); // Buffer de 16 MB
+    let writer = Arc::new(Mutex::new(writer)); // Proteger el escritor con un Mutex para acceso concurrente
 
-    // Sequence counter
-    let mut seq_count = 0usize;
-
-    // Initialize a progress bar for Step 2
+    // Inicializar una barra de progreso para el Paso 2
     let pb_write = ProgressBar::new(total_sequences as u64);
     pb_write.set_style(
         ProgressStyle::default_bar()
@@ -271,64 +309,81 @@ fn extract_and_write_snps(
             .progress_chars("#>-"),
     );
 
-    // Iterate through each record (sequence) in the FASTA file sequentially
-    for result in fasta_reader.records() {
-        let record = match result {
-            Ok(rec) => rec,
-            Err(e) => {
-                eprintln!("Error reading a sequence: {}", e);
-                continue;
+    // Contador atómico para secuencias escritas
+    let seq_count = Arc::new(AtomicUsize::new(0));
+
+    // Procesar y escribir secuencias en paralelo
+    fasta_reader
+        .records()
+        .par_bridge()
+        .for_each(|result| {
+            let record = match result {
+                Ok(rec) => rec,
+                Err(e) => {
+                    eprintln!("Error reading a sequence: {}", e);
+                    return;
+                }
+            };
+            let seq = record.seq();
+
+            // Extraer nucleótidos SNP basados en snp_positions
+            let snp_seq: Vec<u8> = snp_positions.iter().map(|&pos| seq[pos]).collect();
+
+            // Convertir a String
+            let snp_seq_str = String::from_utf8_lossy(&snp_seq).to_string();
+
+            // Escribir de forma segura en el archivo de salida
+            {
+                let mut writer = writer.lock().unwrap();
+                if let Err(e) = writeln!(writer, ">{}", record.id()) {
+                    eprintln!("Error writing header: {}", e);
+                    return;
+                }
+                if let Err(e) = writeln!(writer, "{}", snp_seq_str) {
+                    eprintln!("Error writing SNP sequence: {}", e);
+                    return;
+                }
             }
-        };
-        let seq = record.seq();
 
-        // Extract SNP nucleotides based on snp_positions
-        let snp_seq: Vec<u8> = snp_positions.iter().map(|&pos| seq[pos]).collect();
+            // Incrementar el contador y actualizar la barra de progreso
+            let current = seq_count.fetch_add(1, Ordering::SeqCst) + 1;
+            pb_write.inc(1);
 
-        // Write the header
-        if let Err(e) = writeln!(writer, ">{}", record.id()) {
-            eprintln!("Error writing header: {}", e);
-            continue;
-        }
-
-        // Write the SNP sequence
-        if let Err(e) = writeln!(writer, "{}", String::from_utf8_lossy(&snp_seq)) {
-            eprintln!("Error writing SNP sequence: {}", e);
-            continue;
-        }
-
-        seq_count += 1;
-        pb_write.inc(1);
-
-        // Report RAM usage every 100,000 sequences
-        if seq_count % 100_000 == 0 {
-            if let Ok(mut sys) = system.lock() {
-                sys.refresh_memory();
-                let total_memory = sys.total_memory(); // in KB
-                let used_memory = sys.used_memory(); // in KB
-                println!(
-                    "[{}] Written {} SNP sequences. RAM Usage: {} KB used / {} KB total.",
-                    Local::now().format("%Y-%m-%d %H:%M:%S"),
-                    seq_count,
-                    used_memory,
-                    total_memory
-                );
+            // Reportar uso de RAM cada 100,000 secuencias
+            if current % 100_000 == 0 {
+                if let Ok(mut sys) = system.lock() {
+                    sys.refresh_memory();
+                    let total_memory = sys.total_memory(); // en KB
+                    let used_memory = sys.used_memory(); // en KB
+                    println!(
+                        "[{}] Written {} SNP sequences. RAM Usage: {} KB used / {} KB total.",
+                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                        current,
+                        used_memory,
+                        total_memory
+                    );
+                }
             }
-        }
-    }
+        });
 
-    // Finalize the progress bar for Step 2
+    // Finalizar la barra de progreso para el Paso 2
+    let final_count = seq_count.load(Ordering::SeqCst);
     pb_write.finish_with_message(format!(
         "Completed writing {} SNP sequences.",
-        seq_count
+        final_count
     ));
 
     println!(
         "[{}] Total SNP sequences written: {}",
         Local::now().format("%Y-%m-%d %H:%M:%S"),
-        seq_count
+        final_count
     );
 
-    writer.flush()?;
+    // Asegurar que todos los datos se hayan escrito correctamente
+    {
+        let mut writer = writer.lock().unwrap();
+        writer.flush()?;
+    }
+
     Ok(())
 }
