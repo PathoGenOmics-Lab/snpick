@@ -1,4 +1,6 @@
-# SNPick
+<p align="center">
+  <img src="logo/SNPick.png" title="SNPick.png logo" style="width:750px; height: auto;">
+</p>
 
 </div>
 
@@ -7,4 +9,4 @@ __and Mireia Coscolla<sup>1</sup>__
 <br>
 <sub> 1. Institute for Integrative Systems Biology, I<sup>2</sup>SysBio, University of Valencia-CSIC, Valencia, Spain </sub>  
 
-
+# SNPick
