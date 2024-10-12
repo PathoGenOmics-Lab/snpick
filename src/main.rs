@@ -49,7 +49,6 @@ static NUCLEOTIDE_BITS: [u8; 256] = {
     table[b'H' as usize] = 0b1011; // A or C or T
     table[b'V' as usize] = 0b0111; // A or C or G
     table[b'N' as usize] = 0b1111; // Any nucleotide (A, C, G, T)
-    table[b'X' as usize] = 0b1111; // Any nucleotide (A, C, G, T)
     table
 };
 
