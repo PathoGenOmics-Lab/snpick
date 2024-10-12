@@ -4,6 +4,10 @@
 
 </div>
 
+[![Rust](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml/badge.svg)](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-%23af64d1?)](https://github.com/PathoGenOmics-Lab/snpick/blob/main/LICENSE) 
+[![PGO](https://img.shields.io/badge/PathoGenOmics-lab-red?)](https://github.com/PathoGenOmics-Lab)
+
 __Paula Ruiz-Rodriguez<sup>1</sup>__ 
 __and Mireia Coscolla<sup>1</sup>__
 <br>
