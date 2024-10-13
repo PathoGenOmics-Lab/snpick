@@ -19,7 +19,7 @@ We are committed to ensuring the security of `snpick`. Critical vulnerabilities 
 
 - Always ensure dependencies are up to date.
 - Use recommended security configurations when deploying `snpick` in production.
-- Avoid running `get_mnv` with elevated privileges unless strictly necessary.
+- Avoid running `snpick` with elevated privileges unless strictly necessary.
 
 ### Contact
 - Visit our [repository security tab](https://github.com/PathoGenOmics-Lab/snpick/tree/main?tab=security-ov-file) for more information on our security posture.
