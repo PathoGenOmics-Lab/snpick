@@ -134,13 +134,13 @@ struct VariablePositionInfo {
 /// Step 1: Identify variable positions and extract individual genotypes
 fn identify_variable_positions(
     input_filename: &str,
-    system: &Arc<Mutex<System>>,
+    _system: &Arc<Mutex<System>>,
     include_gaps: bool,
 ) -> io::Result<(Vec<VariablePositionInfo>, usize, Vec<String>)> {
     // Open the input FASTA file
     let input_file = File::open(input_filename)?;
     let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file);
-    let mut fasta_reader = fasta::Reader::new(reader);
+    let fasta_reader = fasta::Reader::new(reader);
 
     // Read all sequences and store names and sequences
     let mut sequences = Vec::new();
