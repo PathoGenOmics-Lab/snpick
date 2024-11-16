@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bio = "2.0.3"
+nalgebra = "0.33.2"
 rayon = "1.10.0"
 clap = { version = "4.5.21", features = ["derive"] }
 indicatif = "0.17.9"
@@ -12,5 +13,4 @@ chrono = "0.4.38"
 sysinfo = "0.32.0"
 twox-hash = "2.0.1"
 
-[patch.crates-io]
-nalgebra = "0.33.2"
+
