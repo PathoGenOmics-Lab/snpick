@@ -20,7 +20,7 @@ SNPick is a fast and memory-efficient tool designed to extract SNP (Single Nucle
 
 ## Problematic
 
-Tools like **snp-sites** have been widely used to extract SNP positions from FASTA alignments. **snp-sites** is a valuable tool for smaller datasets, providing an effective solution for extracting SNPs in many research scenarios. However, it faces significant challenges when processing large alignments or a high number of sequences.
+Tools like **snp-sites** have been widely used to extract SNP positions from FASTA alignments. **snp-sites** is a valuable tool for smaller datasets, providing an effective solution for extracting SNPs in many research scenarios. However, it faces significant challenges when processing large alignments or a high number of sequences. **snp-sites** is not suitable for generating SNP datasets specifically designed for phylogenetic analyses of SNPs using ASC (Ascertainment Bias Correction) in tools like **RAxML** or **IQ-TREE**.
 
 When dealing with thousands of sequences or large sequence lengths, **snp-sites** tends to become inefficient both in terms of runtime and memory usage. For instance, the tool may struggle or even fail entirely when processing datasets with hundreds of thousands of sequences or sequences that are several megabases in length. This limitation is particularly relevant for researchers who need to work with whole-genome alignments from many individuals, especially in epidemiological studies or population genomics.
 
