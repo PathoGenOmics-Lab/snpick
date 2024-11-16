@@ -4,6 +4,7 @@ version = "1.0.0"
 edition = "2021"
 
 [dependencies]
+nalgebra = "0.33.2"
 bio = "2.0.3"
 rayon = "1.10.0"
 clap = { version = "4.5.21", features = ["derive"] }
