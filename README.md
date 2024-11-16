@@ -4,9 +4,10 @@
 
 </div>
 
-[![Rust](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml/badge.svg)](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml)
-[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-%23af64d1?)](https://github.com/PathoGenOmics-Lab/snpick/blob/main/LICENSE) 
-[![PGO](https://img.shields.io/badge/PathoGenOmics-lab-red?)](https://github.com/PathoGenOmics-Lab)
+[![Rust](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml/badge.svg?style=flat-square)](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml)
+[![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-%23af64d1?style=flat-square)](https://github.com/PathoGenOmics-Lab/snpick/blob/main/LICENSE) 
+[![PGO](https://img.shields.io/badge/PathoGenOmics-lab-red?style=flat-square)](https://github.com/PathoGenOmics-Lab)
+
 
 __Paula Ruiz-Rodriguez<sup>1</sup>__ 
 __and Mireia Coscolla<sup>1</sup>__
@@ -23,7 +24,7 @@ Tools like **snp-sites** have been widely used to extract SNP positions from FAS
 
 When dealing with thousands of sequences or large sequence lengths, **snp-sites** tends to become inefficient both in terms of runtime and memory usage. For instance, the tool may struggle or even fail entirely when processing datasets with hundreds of thousands of sequences or sequences that are several megabases in length. This limitation is particularly relevant for researchers who need to work with whole-genome alignments from many individuals, especially in epidemiological studies or population genomics.
 
-## SNPick Advantage
+## 🪝SNPick Advantage
 
 **SNPick** was developed to overcome these limitations, providing a highly scalable and optimized approach to SNP extraction. Unlike **snp-sites**, SNPick employs parallel processing and an efficient memory management strategy, making it suitable for very large datasets. This scalability allows users to work with massive alignments, extracting SNPs in a fraction of the time and with significantly lower memory requirements compared to traditional tools.
 
@@ -32,7 +33,7 @@ The key benefits of SNPick include:
 - **Efficiency**: Optimized for speed, taking advantage of multi-threading and efficient memory allocation.
 - **Versatility**: Supports the extraction of SNPs while handling IUPAC ambiguous nucleotides, making it highly adaptable to different types of genomic data.
 
-## Functionalities
+## 💾 Functionalities
 
 SNPick provides input that is compatible with phylogenetic software like **RAxML** and **IQ-TREE** when performing ascertainment bias correction (asc bias). This ensures that the output is suitable for accurate downstream phylogenetic inference and evolutionary analyses.
 
@@ -72,7 +73,23 @@ Usage
 
 SNPick can be easily integrated into existing pipelines for genomic data analysis. It is suitable for use in environments where memory efficiency and processing speed are crucial, such as analyzing large microbial datasets or conducting comparative genomic studies.
 
-## Arguments
+## 🛠️ Installation
+You can install snpick via conda, mamba (for unix/mac) or downloading [the binary file](https://github.com/PathoGenOmics-Lab/snpick/releases/download/1.0.0/snpick) (unix):
+
+### 🐍 Using conda
+```
+conda install -c bioconda snpick
+```
+### 🐍 Using mamba
+```
+mamba install -c bioconda snpick
+```
+### 📨 Using binary
+```
+wget https://github.com/PathoGenOmics-Lab/snpick/releases/download/1.0.0/snpick
+```
+
+## 🗃️ Arguments
 
 SNPick provides a variety of arguments to customize the SNP extraction process:
 
@@ -83,7 +100,7 @@ SNPick provides a variety of arguments to customize the SNP extraction process:
 - `--vcf-output` (**optional**): Specifies the output VCF file name. This argument is used in combination with `--vcf` to store detailed information about each SNP position, including reference and alternate bases, and the observed base for each sample.
 - `--include-gaps` (**optional**): When this flag is used, SNPick will consider gaps (`-`) in the sequences as valid characters when determining variable positions. This can be useful for certain types of evolutionary analyses where gaps are informative.
 
-## Example
+## 🎴 Example
 
 To extract SNPs from a given FASTA file:
 ```sh
