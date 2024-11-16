@@ -150,7 +150,7 @@ In this example, large_dataset.fasta is the input file, snp_large_output.fasta i
 <!-- prettier-ignore-start -->
 <!-- markdownlint-disable -->
 <div align="center">
-get_MNV is developed with ❤️ by:
+SNPick is developed with ❤️ by:
 <table>
   <tr>
     <td align="center">
