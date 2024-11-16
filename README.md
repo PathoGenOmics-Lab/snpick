@@ -89,9 +89,9 @@ To extract SNPs from a given FASTA file:
 ```sh
 snpick --fasta input_alignment.fasta --output snp_alignment.fasta --threads 8
 ```
-Input: The --fasta parameter specifies the input alignment file in FASTA format. This file contains the aligned sequences from which SNPs will be extracted.
+**Input**: The `--fasta` parameter specifies the input alignment file in FASTA format. This file contains the aligned sequences from which SNPs will be extracted.
 
-Output: The --output parameter specifies the output file, which will contain only the SNP sites extracted from the input alignment.
+**Output**: The `--output` parameter specifies the output file, which will contain only the SNP sites extracted from the input alignment.
 
 This command will generate an output file containing only the SNP sites, optimized for downstream analysis.
 ### Input and Output Example
