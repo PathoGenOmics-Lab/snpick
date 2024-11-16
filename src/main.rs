@@ -16,7 +16,7 @@ use std::collections::{HashSet, HashMap};
 #[derive(Parser, Debug)]
 #[command(
     name = "snpick",
-    version = "0.1.0",
+    version = "1.0.0",
     author = "Paula Ruiz-Rodriguez <paula.ruiz.rodriguez@csic.es>",
     about = "A fast and efficient tool for extracting variable sites and generating a VCF with actual bases, including ambiguous bases and codons."
 )]
