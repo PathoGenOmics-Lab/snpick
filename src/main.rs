@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use chrono::Local;
-use sysinfo::{System, SystemExt};
+use sysinfo::{System};
 use std::collections::{HashSet, HashMap};
 
 /// snpick: A tool to extract variable sites from a FASTA alignment and generate a VCF with actual bases, including ambiguous bases and codons.
