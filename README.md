@@ -9,6 +9,7 @@
 [![PGO](https://img.shields.io/badge/PathoGenOmics-lab-red?style=flat-square)](https://github.com/PathoGenOmics-Lab)
 [![Anaconda-Server Badge](https://img.shields.io/conda/dn/bioconda/snpick.svg?style=flat-square)](https://anaconda.org/bioconda/snpick)
 [![Anaconda-Version Badge](https://anaconda.org/bioconda/snpick/badges/version.svg)](https://anaconda.org/bioconda/snpick)
+[![DOI](https://img.shields.io/badge/doi-10.5281%2Fzenodo.14191809-%23ff0077?style=flat-square)](https://doi.org/10.5281/zenodo.14191809)
 
 __Paula Ruiz-Rodriguez<sup>1</sup>__ 
 __and Mireia Coscolla<sup>1</sup>__
