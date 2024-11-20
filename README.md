@@ -10,6 +10,7 @@
 [![Anaconda-Server Badge](https://img.shields.io/conda/dn/bioconda/snpick.svg?style=flat-square)](https://anaconda.org/bioconda/snpick)
 [![Anaconda-Version Badge](https://anaconda.org/bioconda/snpick/badges/version.svg)](https://anaconda.org/bioconda/snpick)
 [![DOI](https://img.shields.io/badge/doi-10.5281%2Fzenodo.14191809-%23ff0077?style=flat-square)](https://doi.org/10.5281/zenodo.14191809)
+[![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat-square)](http://bioconda.github.io/recipes/snpick/README.html)
 
 </div>
 
