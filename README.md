@@ -2,14 +2,16 @@
   <img src="logo/SNPick.png" title="SNPick.png logo" style="width:750px; height: auto;">
 </p>
 
-</div>
-
+<div align="center">
+  
 [![Rust](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml/badge.svg?style=flat-square)](https://github.com/PathoGenOmics-Lab/snpick/actions/workflows/rust.yml)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-%23af64d1?style=flat-square)](https://github.com/PathoGenOmics-Lab/snpick/blob/main/LICENSE) 
 [![PGO](https://img.shields.io/badge/PathoGenOmics-lab-red?style=flat-square)](https://github.com/PathoGenOmics-Lab)
 [![Anaconda-Server Badge](https://img.shields.io/conda/dn/bioconda/snpick.svg?style=flat-square)](https://anaconda.org/bioconda/snpick)
 [![Anaconda-Version Badge](https://anaconda.org/bioconda/snpick/badges/version.svg)](https://anaconda.org/bioconda/snpick)
 [![DOI](https://img.shields.io/badge/doi-10.5281%2Fzenodo.14191809-%23ff0077?style=flat-square)](https://doi.org/10.5281/zenodo.14191809)
+
+</div>
 
 __Paula Ruiz-Rodriguez<sup>1</sup>__ 
 __and Mireia Coscolla<sup>1</sup>__
