@@ -78,7 +78,6 @@ fn check_paths_differ(input: &str, output: &str) -> io::Result<()> {
 
 struct VariablePosition { index: usize, ref_base: u8, alt_bases: Vec<u8>, ns: usize }
 struct ConstantSiteCounts { a: usize, c: usize, g: usize, t: usize }
-#[allow(dead_code)]
 struct SiteCounts { constant: ConstantSiteCounts, variable: usize, ambiguous: usize }
 impl std::fmt::Display for ConstantSiteCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -143,8 +142,8 @@ fn pass1_scan(path: &str, lookup: &[u8; 256]) -> io::Result<ScanResult> {
 
         // Hot loop: OR bitmask via lookup table
         let bm = &mut bitmask;
-        for i in 0..seq_length {
-            unsafe { *bm.get_unchecked_mut(i) |= lookup[*seq.get_unchecked(i) as usize]; }
+        for (b, &s) in bm.iter_mut().zip(seq.iter()) {
+            *b |= lookup[s as usize];
         }
 
         count += 1;
@@ -214,7 +213,8 @@ fn pass2_extract(
     let mut fasta = fasta::Reader::new(reader);
     let mut record = fasta::Record::new();
 
-    let out_file = File::create(output)?;
+    let out_file = File::create(output).map_err(|e| io::Error::new(e.kind(),
+        format!("Cannot create output '{}': {}", output, e)))?;
     let mut writer = BufWriter::with_capacity(IO_BUF, out_file);
 
     let mut vcf_geno: Vec<u8> = if collect_vcf { vec![0u8; num_var * num_samples] } else { Vec::new() };
@@ -243,9 +243,7 @@ fn pass2_extract(
 
         // Extract variable positions — O(V) direct index
         for (vi, &p) in pos_indices.iter().enumerate() {
-            // B11: uppercase output for consistency
-            let b = unsafe { *seq.get_unchecked(p) };
-            unsafe { *var_buf.get_unchecked_mut(vi) = b.to_ascii_uppercase(); }
+            var_buf[vi] = seq[p].to_ascii_uppercase();
         }
 
         // B9: write full header (id + description)
@@ -297,7 +295,8 @@ fn write_vcf(
     vcf_geno: &[u8], num_samples: usize, var_positions: &[VariablePosition],
     vcf_path: &str, names: &[String], seq_length: usize,
 ) -> io::Result<()> {
-    let out = File::create(vcf_path)?;
+    let out = File::create(vcf_path).map_err(|e| io::Error::new(e.kind(),
+        format!("Cannot create VCF '{}': {}", vcf_path, e)))?;
     let mut w = BufWriter::with_capacity(4 * 1024 * 1024, out);
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=snpick v{}", env!("CARGO_PKG_VERSION"))?;
@@ -335,7 +334,7 @@ fn write_vcf(
 
 const MAX_VCF_GENO_BYTES: usize = 4_000_000_000; // 4 GB guard
 
-fn main() -> io::Result<()> {
+fn run() -> io::Result<()> {
     let args = Args::parse();
     let start = Instant::now();
     let lookup = build_lookup(args.include_gaps);
@@ -368,8 +367,9 @@ fn main() -> io::Result<()> {
     // B6: destructure to free bitmask+ref_seq early, keep names+descs
     let ScanResult { names, descs, .. } = scan;
 
-    eprintln!("[snpick] {} variable, {} constant ({}), {} ambiguous-only.",
-        num_var, site_counts.constant.total(), site_counts.constant, site_counts.ambiguous);
+    eprintln!("[snpick] {} variable, {} constant ({}), {} ambiguous-only, {} total.",
+        site_counts.variable, site_counts.constant.total(), site_counts.constant,
+        site_counts.ambiguous, seq_length);
     eprintln!("[snpick] ASC fconst: {}", site_counts.constant.fconst());
 
     // B4: always create output, even with 0 variable sites
@@ -413,6 +413,13 @@ fn main() -> io::Result<()> {
     eprintln!("[snpick] Done in {:.2}s. {} vars from {} seqs × {} pos.",
         start.elapsed().as_secs_f64(), num_var, num_samples, seq_length);
     Ok(())
+}
+
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("[snpick] Error: {}", e);
+        std::process::exit(1);
+    }
 }
 
 // =============================================================================
