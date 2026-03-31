@@ -281,13 +281,28 @@ fn write_vcf(
 // main
 // =============================================================================
 
+const MAX_VCF_GENO_BYTES: usize = 4_000_000_000; // 4 GB guard
+
 fn main() -> io::Result<()> {
     let args = Args::parse();
     let start = Instant::now();
     let lookup = build_lookup(args.include_gaps);
 
+    // B1: auto-enable VCF if --vcf_output is provided
+    let do_vcf = args.vcf || args.vcf_output.is_some();
+
+    // B3+B5: resolve VCF path early, check all path pairs
     check_paths_differ(&args.fasta, &args.output)?;
-    if let Some(ref vp) = args.vcf_output { check_paths_differ(&args.fasta, vp)?; }
+    let vcf_path = if do_vcf {
+        let vp = args.vcf_output.unwrap_or_else(|| {
+            let stem = Path::new(&args.output).file_stem()
+                .and_then(|s| s.to_str()).unwrap_or("output");
+            format!("{}.vcf", stem)
+        });
+        check_paths_differ(&args.fasta, &vp)?;
+        check_paths_differ(&args.output, &vp)?;
+        Some(vp)
+    } else { None };
 
     // Pass 1: scan bitmask
     let scan = pass1_scan(&args.fasta, &lookup)?;
@@ -296,20 +311,40 @@ fn main() -> io::Result<()> {
     let num_samples = scan.names.len();
     let seq_length = scan.seq_length;
 
+    // B6: destructure to free bitmask+ref_seq early, keep names
+    let ScanResult { names, .. } = scan;
+
     eprintln!("[snpick] {} variable, {} constant ({}).", num_var, constant.total(), constant);
     eprintln!("[snpick] ASC fconst: {}", constant.fconst());
-    if num_var == 0 { eprintln!("[snpick] No variable positions."); return Ok(()); }
 
-    // Free scan data
-    drop(scan.bitmask);
-    drop(scan.ref_seq);
+    // B4: always create output, even with 0 variable sites
+    if num_var == 0 {
+        eprintln!("[snpick] No variable positions — writing empty output.");
+        let out = File::create(&args.output)?;
+        let mut w = BufWriter::new(out);
+        for name in &names {
+            write!(w, ">{}\n\n", name)?;
+        }
+        w.flush()?;
+        return Ok(());
+    }
+
+    // B2: guard VCF geno allocation
+    if do_vcf {
+        let geno_bytes = num_var.saturating_mul(num_samples);
+        if geno_bytes > MAX_VCF_GENO_BYTES {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                format!("VCF genotype matrix would require {} GB ({} vars × {} samples). \
+                    Use without --vcf or reduce input.",
+                    geno_bytes / 1_000_000_000, num_var, num_samples)));
+        }
+    }
 
     // Pass 2: extract
-    let vcf_geno = pass2_extract(&args.fasta, &args.output, &var_positions, num_samples, seq_length, args.vcf)?;
+    let vcf_geno = pass2_extract(&args.fasta, &args.output, &var_positions, num_samples, seq_length, do_vcf)?;
 
-    if let Some(ref geno) = vcf_geno {
-        let vp = args.vcf_output.unwrap_or_else(|| "output.vcf".to_string());
-        write_vcf(geno, num_samples, &var_positions, &vp, &scan.names, seq_length)?;
+    if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
+        write_vcf(geno, num_samples, &var_positions, vp, &names, seq_length)?;
         eprintln!("[snpick] VCF written to {}.", vp);
     }
 
