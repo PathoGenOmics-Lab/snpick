@@ -9,14 +9,14 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use chrono::Local;
-use sysinfo::System;
+use sysinfo::{Pid, System};
 use std::collections::{HashSet, HashMap};
 
 /// snpick: A tool to extract variable sites from a FASTA alignment and generate a VCF with actual bases, including ambiguous bases and codons.
 #[derive(Parser, Debug)]
 #[command(
     name = "snpick",
-    version = "1.0.0",
+    version = env!("CARGO_PKG_VERSION"),
     author = "Paula Ruiz-Rodriguez <paula.ruiz.rodriguez@csic.es>",
     about = "A fast and efficient tool for extracting variable sites and generating a VCF with actual bases, including ambiguous bases and codons."
 )]
@@ -46,7 +46,8 @@ struct Args {
     vcf_output: Option<String>,
 }
 
-/// Converts a nucleotide to a bitmask for variable site detection
+/// Converts a nucleotide to a bitmask for variable site detection.
+/// Returns None for ambiguous/unknown bases (they are excluded from variant calling).
 fn nucleotide_to_bit(nuc: u8, include_gaps: bool) -> Option<u8> {
     match nuc.to_ascii_uppercase() {
         b'A' => Some(0b000001),
@@ -54,7 +55,7 @@ fn nucleotide_to_bit(nuc: u8, include_gaps: bool) -> Option<u8> {
         b'G' => Some(0b000100),
         b'T' => Some(0b001000),
         b'-' if include_gaps => Some(0b010000),
-        _ => None, // Exclude ambiguous bases
+        _ => None,
     }
 }
 
@@ -74,7 +75,7 @@ fn main() -> io::Result<()> {
         .build()
         .expect("Failed to build Rayon thread pool");
 
-    // Initialize system for RAM usage reporting
+    // Initialize system for process-level RAM usage reporting (#15)
     let system = Arc::new(Mutex::new(System::new_all()));
 
     pool.install(|| {
@@ -247,6 +248,22 @@ fn identify_variable_positions(
     variable_positions
 }
 
+/// Report process-level RAM usage (not system-wide) (#15)
+fn report_process_memory(system: &Arc<Mutex<System>>, current: usize) {
+    if let Ok(mut sys) = system.lock() {
+        let pid = Pid::from_u32(std::process::id());
+        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+        if let Some(process) = sys.process(pid) {
+            println!(
+                "[{}] Written {} sequences. Process RSS: {} MB.",
+                Local::now().format("%Y-%m-%d %H:%M:%S"),
+                current,
+                process.memory() / (1024 * 1024)
+            );
+        }
+    }
+}
+
 /// Extract variable positions and write to the output FASTA file (deterministic order)
 fn extract_and_write_variables(
     sequences: &[Vec<u8>],
@@ -283,16 +300,7 @@ fn extract_and_write_variables(
         }
 
         if current % 100_000 == 0 {
-            if let Ok(mut sys) = system.lock() {
-                sys.refresh_memory();
-                println!(
-                    "[{}] Written {} sequences. RAM usage: {} KB used / {} KB total.",
-                    Local::now().format("%Y-%m-%d %H:%M:%S"),
-                    current,
-                    sys.used_memory(),
-                    sys.total_memory()
-                );
-            }
+            report_process_memory(system, current);
         }
     }
 
@@ -380,7 +388,7 @@ fn generate_vcf_file(
             let genotype_base = seq[info.position].to_ascii_uppercase();
             let gt = match allele_index.get(&genotype_base) {
                 Some(idx) => idx.to_string(),
-                None => ".".to_string(),
+                None => ".".to_string(), // Ambiguous or unknown bases → missing (#13)
             };
             write!(writer, "\t{}", gt)?;
         }
@@ -390,4 +398,251 @@ fn generate_vcf_file(
     writer.flush()?;
 
     Ok(())
+}
+
+// =============================================================================
+// Tests (#12)
+// =============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Helper: write a temp FASTA and return its path
+    fn write_temp_fasta(name: &str, content: &str) -> String {
+        let path = format!("/tmp/snpick_test_{}.fa", name);
+        let mut f = File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
+    // --- nucleotide_to_bit ---
+
+    #[test]
+    fn test_nucleotide_to_bit_standard() {
+        assert_eq!(nucleotide_to_bit(b'A', false), Some(0b000001));
+        assert_eq!(nucleotide_to_bit(b'a', false), Some(0b000001));
+        assert_eq!(nucleotide_to_bit(b'C', false), Some(0b000010));
+        assert_eq!(nucleotide_to_bit(b'G', false), Some(0b000100));
+        assert_eq!(nucleotide_to_bit(b'T', false), Some(0b001000));
+        assert_eq!(nucleotide_to_bit(b't', false), Some(0b001000));
+    }
+
+    #[test]
+    fn test_nucleotide_to_bit_gap() {
+        assert_eq!(nucleotide_to_bit(b'-', false), None);
+        assert_eq!(nucleotide_to_bit(b'-', true), Some(0b010000));
+    }
+
+    #[test]
+    fn test_nucleotide_to_bit_ambiguous() {
+        assert_eq!(nucleotide_to_bit(b'N', false), None);
+        assert_eq!(nucleotide_to_bit(b'R', false), None);
+        assert_eq!(nucleotide_to_bit(b'Y', false), None);
+        assert_eq!(nucleotide_to_bit(b'?', false), None);
+    }
+
+    // --- read_sequences ---
+
+    #[test]
+    fn test_read_sequences_basic() {
+        let path = write_temp_fasta("basic", ">s1\nATGC\n>s2\nATCC\n");
+        let (seqs, names, len) = read_sequences(&path).unwrap();
+        assert_eq!(names, vec!["s1", "s2"]);
+        assert_eq!(seqs.len(), 2);
+        assert_eq!(len, 4);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_read_sequences_empty() {
+        let path = write_temp_fasta("empty", "");
+        let result = read_sequences(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_read_sequences_unequal_lengths() {
+        let path = write_temp_fasta("unequal", ">s1\nATGC\n>s2\nAT\n");
+        let result = read_sequences(&path);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("length"));
+        std::fs::remove_file(&path).ok();
+    }
+
+    // --- identify_variable_positions ---
+
+    #[test]
+    fn test_identify_no_variants() {
+        let seqs = vec![b"AAAA".to_vec(), b"AAAA".to_vec()];
+        let result = identify_variable_positions(&seqs, 4, false);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_identify_single_variant() {
+        let seqs = vec![b"ATGC".to_vec(), b"ACGC".to_vec()];
+        let result = identify_variable_positions(&seqs, 4, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].position, 1);
+        assert_eq!(result[0].reference_base, b'T');
+        assert_eq!(result[0].alternate_bases, vec![b'C']);
+    }
+
+    #[test]
+    fn test_identify_multiple_variants() {
+        let seqs = vec![
+            b"ATGC".to_vec(),
+            b"CTGC".to_vec(),
+            b"ATGA".to_vec(),
+        ];
+        let result = identify_variable_positions(&seqs, 4, false);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].position, 0); // A vs C
+        assert_eq!(result[1].position, 3); // C vs A
+    }
+
+    #[test]
+    fn test_identify_with_gaps() {
+        let seqs = vec![b"ATGC".to_vec(), b"A-GC".to_vec()];
+        // Without gaps: no variant at pos 1 (- is ignored)
+        let result_no_gaps = identify_variable_positions(&seqs, 4, false);
+        assert!(result_no_gaps.is_empty());
+        // With gaps: variant at pos 1
+        let result_gaps = identify_variable_positions(&seqs, 4, true);
+        assert_eq!(result_gaps.len(), 1);
+        assert_eq!(result_gaps[0].position, 1);
+    }
+
+    #[test]
+    fn test_identify_ambiguous_ignored() {
+        // N should be ignored — if only A and N at a position, it's NOT variable
+        let seqs = vec![b"ATGC".to_vec(), b"ANGC".to_vec()];
+        let result = identify_variable_positions(&seqs, 4, false);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_identify_multiallelic() {
+        let seqs = vec![
+            b"ATGC".to_vec(),
+            b"CTGC".to_vec(),
+            b"GTGC".to_vec(),
+            b"TTGC".to_vec(),
+        ];
+        let result = identify_variable_positions(&seqs, 4, false);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].position, 0);
+        assert_eq!(result[0].reference_base, b'A');
+        assert_eq!(result[0].alternate_bases, vec![b'C', b'G', b'T']);
+    }
+
+    #[test]
+    fn test_positions_sorted() {
+        // Even with par_iter, positions must come out sorted
+        let mut seqs = vec![vec![b'A'; 1000], vec![b'A'; 1000]];
+        // Make positions 999, 500, 100, 0 variable
+        for &pos in &[0usize, 100, 500, 999] {
+            seqs[1][pos] = b'T';
+        }
+        let result = identify_variable_positions(&seqs, 1000, false);
+        let positions: Vec<usize> = result.iter().map(|v| v.position).collect();
+        assert_eq!(positions, vec![0, 100, 500, 999]);
+    }
+
+    // --- VCF format ---
+
+    #[test]
+    fn test_vcf_output_format() {
+        let seqs = vec![
+            b"ATGC".to_vec(),
+            b"CTGC".to_vec(),
+            b"GTGC".to_vec(),
+        ];
+        let sample_names = vec!["ref".to_string(), "s1".to_string(), "s2".to_string()];
+        let var_pos = identify_variable_positions(&seqs, 4, false);
+
+        let vcf_path = "/tmp/snpick_test_vcf.vcf";
+        generate_vcf_file(&seqs, &var_pos, vcf_path, &sample_names, 4).unwrap();
+
+        let content = std::fs::read_to_string(vcf_path).unwrap();
+
+        // Check header
+        assert!(content.starts_with("##fileformat=VCFv4.2"));
+        assert!(content.contains("##FORMAT=<ID=GT,"));
+        assert!(content.contains("##contig=<ID=1,length=4>"));
+
+        // Check data line
+        let data_lines: Vec<&str> = content.lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        assert_eq!(data_lines.len(), 1);
+
+        let fields: Vec<&str> = data_lines[0].split('\t').collect();
+        assert_eq!(fields[0], "1");        // CHROM
+        assert_eq!(fields[1], "1");        // POS (1-based)
+        assert_eq!(fields[3], "A");        // REF (first sequence)
+        assert_eq!(fields[4], "C,G");      // ALT (comma-separated, sorted)
+        assert_eq!(fields[8], "GT");       // FORMAT
+        assert_eq!(fields[9], "0");        // ref → 0
+        assert_eq!(fields[10], "1");       // s1 → C = 1
+        assert_eq!(fields[11], "2");       // s2 → G = 2
+
+        std::fs::remove_file(vcf_path).ok();
+    }
+
+    #[test]
+    fn test_vcf_ambiguous_genotype() {
+        let seqs = vec![
+            b"ATGC".to_vec(),
+            b"CTGC".to_vec(),
+            b"NTGC".to_vec(), // N at variable position
+        ];
+        let sample_names = vec!["ref".to_string(), "s1".to_string(), "s2".to_string()];
+        let var_pos = identify_variable_positions(&seqs, 4, false);
+
+        let vcf_path = "/tmp/snpick_test_vcf_ambig.vcf";
+        generate_vcf_file(&seqs, &var_pos, vcf_path, &sample_names, 4).unwrap();
+
+        let content = std::fs::read_to_string(vcf_path).unwrap();
+        let data_lines: Vec<&str> = content.lines()
+            .filter(|l| !l.starts_with('#'))
+            .collect();
+        let fields: Vec<&str> = data_lines[0].split('\t').collect();
+        assert_eq!(fields[11], "."); // N → missing
+
+        std::fs::remove_file(vcf_path).ok();
+    }
+
+    // --- FASTA output ---
+
+    #[test]
+    fn test_fasta_output_deterministic() {
+        let seqs = vec![
+            b"ATGCATGC".to_vec(),
+            b"ATGTATGC".to_vec(),
+            b"ACGCATGC".to_vec(),
+        ];
+        let names = vec!["ref".to_string(), "s1".to_string(), "s2".to_string()];
+        let var_pos = identify_variable_positions(&seqs, 8, false);
+        let system = Arc::new(Mutex::new(System::new_all()));
+
+        let fasta_path = "/tmp/snpick_test_fasta.fa";
+        extract_and_write_variables(&seqs, &names, fasta_path, &var_pos, &system).unwrap();
+
+        let content = std::fs::read_to_string(fasta_path).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Order must match input order
+        assert_eq!(lines[0], ">ref");
+        assert_eq!(lines[1], "TC");
+        assert_eq!(lines[2], ">s1");
+        assert_eq!(lines[3], "TT");
+        assert_eq!(lines[4], ">s2");
+        assert_eq!(lines[5], "CC");
+
+        std::fs::remove_file(fasta_path).ok();
+    }
 }
