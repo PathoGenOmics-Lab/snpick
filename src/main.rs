@@ -76,8 +76,10 @@ fn check_paths_differ(input: &str, output: &str) -> io::Result<()> {
 // Data structures
 // =============================================================================
 
-struct VariablePosition { index: usize, ref_base: u8, alt_bases: Vec<u8> }
+struct VariablePosition { index: usize, ref_base: u8, alt_bases: Vec<u8>, ns: usize }
 struct ConstantSiteCounts { a: usize, c: usize, g: usize, t: usize }
+#[allow(dead_code)]
+struct SiteCounts { constant: ConstantSiteCounts, variable: usize, ambiguous: usize }
 impl std::fmt::Display for ConstantSiteCounts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "A:{} C:{} G:{} T:{}", self.a, self.c, self.g, self.t)
@@ -96,6 +98,7 @@ struct ScanResult {
     bitmask: Vec<u8>,
     ref_seq: Vec<u8>,
     names: Vec<String>,
+    descs: Vec<String>, // full header after id (description part)
     seq_length: usize,
 }
 
@@ -108,6 +111,7 @@ fn pass1_scan(path: &str, lookup: &[u8; 256]) -> io::Result<ScanResult> {
     let mut bitmask: Vec<u8> = Vec::new();
     let mut ref_seq: Vec<u8> = Vec::new();
     let mut names: Vec<String> = Vec::new();
+    let mut descs: Vec<String> = Vec::new();
     let mut seq_length = 0usize;
     let mut count = 0usize;
 
@@ -134,6 +138,8 @@ fn pass1_scan(path: &str, lookup: &[u8; 256]) -> io::Result<ScanResult> {
         }
 
         names.push(record.id().to_string());
+        // B9: preserve full description
+        descs.push(record.desc().unwrap_or("").to_string());
 
         // Hot loop: OR bitmask via lookup table
         let bm = &mut bitmask;
@@ -149,39 +155,58 @@ fn pass1_scan(path: &str, lookup: &[u8; 256]) -> io::Result<ScanResult> {
     }
 
     eprintln!("[snpick] Pass 1: {} sequences × {} positions.", count, seq_length);
-    Ok(ScanResult { bitmask, ref_seq, names, seq_length })
+    Ok(ScanResult { bitmask, ref_seq, names, descs, seq_length })
 }
 
 fn analyze(bitmask: &[u8], ref_seq: &[u8], lookup: &[u8; 256], include_gaps: bool)
--> (Vec<VariablePosition>, ConstantSiteCounts) {
+-> (Vec<VariablePosition>, SiteCounts) {
     let mut vars = Vec::new();
     let mut cs = ConstantSiteCounts { a: 0, c: 0, g: 0, t: 0 };
+    let mut ambiguous = 0usize;
     for (pos, &bits) in bitmask.iter().enumerate() {
         let ones = bits.count_ones();
         if ones > 1 {
             let rb = ref_seq[pos].to_ascii_uppercase();
             let ref_base = if lookup[rb as usize] != 0 { rb } else { bits_to_bases(bits, include_gaps)[0] };
             let alt_bases: Vec<u8> = bits_to_bases(bits, include_gaps).into_iter().filter(|&b| b != ref_base).collect();
-            vars.push(VariablePosition { index: pos, ref_base, alt_bases });
+            // NS will be computed in pass2 when we have actual genotypes
+            vars.push(VariablePosition { index: pos, ref_base, alt_bases, ns: 0 });
         } else if ones == 1 {
             if bits & BIT_A != 0 { cs.a += 1; }
             else if bits & BIT_C != 0 { cs.c += 1; }
             else if bits & BIT_G != 0 { cs.g += 1; }
             else if bits & BIT_T != 0 { cs.t += 1; }
+        } else {
+            // B12: bits == 0 means all sequences had ambiguous/unrecognized bases
+            ambiguous += 1;
         }
     }
-    (vars, cs)
+    let num_variable = vars.len();
+    (vars, SiteCounts { constant: cs, variable: num_variable, ambiguous })
 }
 
 // =============================================================================
 // Pass 2: streaming extract — O(V) per seq
 // =============================================================================
 
+struct ExtractParams<'a> {
+    path: &'a str,
+    output: &'a str,
+    names: &'a [String],
+    descs: &'a [String],
+    seq_length: usize,
+    collect_vcf: bool,
+    lookup: &'a [u8; 256],
+}
+
 fn pass2_extract(
-    path: &str, output: &str, var_positions: &[VariablePosition],
-    num_samples: usize, seq_length: usize, collect_vcf: bool,
+    params: &ExtractParams<'_>, var_positions: &mut [VariablePosition],
 ) -> io::Result<Option<Vec<u8>>> {
+    let ExtractParams { path, output, names, descs, seq_length, collect_vcf, lookup } = params;
+    let seq_length = *seq_length;
+    let collect_vcf = *collect_vcf;
     let num_var = var_positions.len();
+    let num_samples = names.len();
     let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
 
     let file = File::open(path)?;
@@ -193,6 +218,8 @@ fn pass2_extract(
     let mut writer = BufWriter::with_capacity(IO_BUF, out_file);
 
     let mut vcf_geno: Vec<u8> = if collect_vcf { vec![0u8; num_var * num_samples] } else { Vec::new() };
+    // B10: per-position count of samples with recognized data
+    let mut ns_counts: Vec<usize> = if collect_vcf { vec![0usize; num_var] } else { Vec::new() };
     let mut var_buf = vec![0u8; num_var];
     let mut si = 0usize;
 
@@ -207,20 +234,38 @@ fn pass2_extract(
                     record.id(), seq.len(), seq_length)));
         }
 
-        // Extract variable positions — O(V) direct index
-        for (vi, &p) in pos_indices.iter().enumerate() {
-            unsafe { *var_buf.get_unchecked_mut(vi) = *seq.get_unchecked(p); }
+        // B7: verify sequence identity matches pass 1
+        if si < num_samples && record.id() != names[si] {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Pass 2: sequence #{} is '{}' but pass 1 had '{}'. File modified?",
+                    si + 1, record.id(), names[si])));
         }
 
+        // Extract variable positions — O(V) direct index
+        for (vi, &p) in pos_indices.iter().enumerate() {
+            // B11: uppercase output for consistency
+            let b = unsafe { *seq.get_unchecked(p) };
+            unsafe { *var_buf.get_unchecked_mut(vi) = b.to_ascii_uppercase(); }
+        }
+
+        // B9: write full header (id + description)
         writer.write_all(b">")?;
         writer.write_all(record.id().as_bytes())?;
+        if si < descs.len() && !descs[si].is_empty() {
+            writer.write_all(b" ")?;
+            writer.write_all(descs[si].as_bytes())?;
+        }
         writer.write_all(b"\n")?;
         writer.write_all(&var_buf)?;
         writer.write_all(b"\n")?;
 
         if collect_vcf {
             for (vi, &nuc) in var_buf.iter().enumerate() {
-                vcf_geno[vi * num_samples + si] = nuc.to_ascii_uppercase();
+                vcf_geno[vi * num_samples + si] = nuc;
+                // B10: count recognized bases for NS
+                if lookup[nuc as usize] != 0 {
+                    ns_counts[vi] += 1;
+                }
             }
         }
         si += 1;
@@ -231,6 +276,13 @@ fn pass2_extract(
     if si != num_samples {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
             format!("Pass 2: Expected {} sequences but got {}.", num_samples, si)));
+    }
+
+    // B10: store computed NS values
+    if collect_vcf {
+        for (vi, vp) in var_positions.iter_mut().enumerate() {
+            vp.ns = ns_counts[vi];
+        }
     }
 
     eprintln!("[snpick] Pass 2: Wrote {} sequences to {}.", si, output);
@@ -264,7 +316,7 @@ fn write_vcf(
             .collect::<Vec<_>>().join(",");
         lut[vp.ref_base as usize] = 0;
         for (i, &ab) in vp.alt_bases.iter().enumerate() { lut[ab as usize] = (i + 1) as u8; }
-        write!(w, "1\t{}\t.\t{}\t{}\t.\tPASS\tNS={}\tGT", vp.index + 1, vp.ref_base as char, alt, num_samples)?;
+        write!(w, "1\t{}\t.\t{}\t{}\t.\tPASS\tNS={}\tGT", vp.index + 1, vp.ref_base as char, alt, vp.ns)?;
         let row = vi * num_samples;
         for si in 0..num_samples {
             let idx = lut[vcf_geno[row + si] as usize];
@@ -294,10 +346,12 @@ fn main() -> io::Result<()> {
     // B3+B5: resolve VCF path early, check all path pairs
     check_paths_differ(&args.fasta, &args.output)?;
     let vcf_path = if do_vcf {
+        // B8: derive VCF path in same directory as output
         let vp = args.vcf_output.unwrap_or_else(|| {
-            let stem = Path::new(&args.output).file_stem()
-                .and_then(|s| s.to_str()).unwrap_or("output");
-            format!("{}.vcf", stem)
+            let out = Path::new(&args.output);
+            let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+            let parent = out.parent().unwrap_or(Path::new("."));
+            parent.join(format!("{}.vcf", stem)).to_string_lossy().into_owned()
         });
         check_paths_differ(&args.fasta, &vp)?;
         check_paths_differ(&args.output, &vp)?;
@@ -306,24 +360,28 @@ fn main() -> io::Result<()> {
 
     // Pass 1: scan bitmask
     let scan = pass1_scan(&args.fasta, &lookup)?;
-    let (var_positions, constant) = analyze(&scan.bitmask, &scan.ref_seq, &lookup, args.include_gaps);
+    let (mut var_positions, site_counts) = analyze(&scan.bitmask, &scan.ref_seq, &lookup, args.include_gaps);
     let num_var = var_positions.len();
     let num_samples = scan.names.len();
     let seq_length = scan.seq_length;
 
-    // B6: destructure to free bitmask+ref_seq early, keep names
-    let ScanResult { names, .. } = scan;
+    // B6: destructure to free bitmask+ref_seq early, keep names+descs
+    let ScanResult { names, descs, .. } = scan;
 
-    eprintln!("[snpick] {} variable, {} constant ({}).", num_var, constant.total(), constant);
-    eprintln!("[snpick] ASC fconst: {}", constant.fconst());
+    eprintln!("[snpick] {} variable, {} constant ({}), {} ambiguous-only.",
+        num_var, site_counts.constant.total(), site_counts.constant, site_counts.ambiguous);
+    eprintln!("[snpick] ASC fconst: {}", site_counts.constant.fconst());
 
     // B4: always create output, even with 0 variable sites
     if num_var == 0 {
         eprintln!("[snpick] No variable positions — writing empty output.");
         let out = File::create(&args.output)?;
         let mut w = BufWriter::new(out);
-        for name in &names {
-            write!(w, ">{}\n\n", name)?;
+        for (i, name) in names.iter().enumerate() {
+            write!(w, ">{}", name)?;
+            if !descs[i].is_empty() { write!(w, " {}", descs[i])?; }
+            writeln!(w)?;
+            writeln!(w)?;
         }
         w.flush()?;
         return Ok(());
@@ -340,8 +398,12 @@ fn main() -> io::Result<()> {
         }
     }
 
-    // Pass 2: extract
-    let vcf_geno = pass2_extract(&args.fasta, &args.output, &var_positions, num_samples, seq_length, do_vcf)?;
+    // Pass 2: extract (B7: verifies names match, B9: preserves descs, B10: computes NS, B11: uppercase)
+    let extract_params = ExtractParams {
+        path: &args.fasta, output: &args.output, names: &names, descs: &descs,
+        seq_length, collect_vcf: do_vcf, lookup: &lookup,
+    };
+    let vcf_geno = pass2_extract(&extract_params, &mut var_positions)?;
 
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
         write_vcf(geno, num_samples, &var_positions, vp, &names, seq_length)?;
@@ -363,6 +425,10 @@ mod tests {
         let p = format!("/tmp/snpick_t_{}.fa", name);
         std::fs::write(&p, c).unwrap(); p
     }
+    fn extract(path: &str, out: &str, v: &mut [VariablePosition], r: &ScanResult, vcf: bool, lk: &[u8;256]) -> io::Result<Option<Vec<u8>>> {
+        let params = ExtractParams { path, output: out, names: &r.names, descs: &r.descs, seq_length: r.seq_length, collect_vcf: vcf, lookup: lk };
+        pass2_extract(&params, v)
+    }
 
     #[test] fn test_lookup() {
         let lk = build_lookup(false);
@@ -382,8 +448,8 @@ mod tests {
         let o = "/tmp/snpick_t_e2eb_out.fa";
         let lk = build_lookup(false);
         let r = pass1_scan(&p, &lk).unwrap();
-        let (v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        pass2_extract(&p, o, &v, r.names.len(), r.seq_length, false).unwrap();
+        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
+        extract(&p, o, &mut v, &r, false, &lk).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
         assert_eq!(l[1], "TC"); assert_eq!(l[3], "TT"); assert_eq!(l[5], "CC");
@@ -394,13 +460,15 @@ mod tests {
         let fo = "/tmp/snpick_t_vcfb_out.fa"; let vo = "/tmp/snpick_t_vcfb.vcf";
         let lk = build_lookup(false);
         let r = pass1_scan(&p, &lk).unwrap();
-        let (v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        let g = pass2_extract(&p, fo, &v, r.names.len(), r.seq_length, true).unwrap().unwrap();
+        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
+        let g = extract(&p, fo, &mut v, &r, true, &lk).unwrap().unwrap();
         write_vcf(&g, r.names.len(), &v, vo, &r.names, r.seq_length).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
-        assert_eq!(f[3], "A"); assert_eq!(f[4], "C,G,T"); assert_eq!(f[9], "0"); assert_eq!(f[12], "3");
+        assert_eq!(f[3], "A"); assert_eq!(f[4], "C,G,T"); assert_eq!(f[9], "0");
+        assert_eq!(f[7], "NS=4"); // B10: all 4 samples have data
+        assert_eq!(f[12], "3");
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
     }
     #[test] fn test_ambig() {
@@ -408,13 +476,28 @@ mod tests {
         let fo = "/tmp/snpick_t_ambb_out.fa"; let vo = "/tmp/snpick_t_ambb.vcf";
         let lk = build_lookup(false);
         let r = pass1_scan(&p, &lk).unwrap();
-        let (v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        let g = pass2_extract(&p, fo, &v, r.names.len(), r.seq_length, true).unwrap().unwrap();
+        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
+        let g = extract(&p, fo, &mut v, &r, true, &lk).unwrap().unwrap();
         write_vcf(&g, r.names.len(), &v, vo, &r.names, r.seq_length).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
-        let f: Vec<&str> = c.lines().filter(|l|!l.starts_with('#')).collect::<Vec<_>>()[0].split('\t').collect();
+        let dl: Vec<&str> = c.lines().filter(|l|!l.starts_with('#')).collect();
+        let f: Vec<&str> = dl[0].split('\t').collect();
+        assert_eq!(f[7], "NS=2"); // B10: only ref+s1 have data, s2 has N
         assert_eq!(f[11], ".");
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
+    }
+    #[test] fn test_desc_preserved() {
+        // B9: description preservation
+        let p = tmp("descb", ">s1 some description\nATGC\n>s2 another desc\nATCC\n");
+        let o = "/tmp/snpick_t_descb_out.fa";
+        let lk = build_lookup(false);
+        let r = pass1_scan(&p, &lk).unwrap();
+        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
+        extract(&p, o, &mut v, &r, false, &lk).unwrap();
+        let c = std::fs::read_to_string(o).unwrap();
+        assert!(c.contains(">s1 some description"));
+        assert!(c.contains(">s2 another desc"));
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
     #[test] fn test_gaps() {
         let p = tmp("gapb", ">ref\nATGC\n>s1\nA-GC\n");
@@ -438,10 +521,25 @@ mod tests {
         let o = "/tmp/snpick_t_intb.fa";
         let lk = build_lookup(false);
         let r = pass1_scan(&p, &lk).unwrap();
-        let (v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
+        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
         std::fs::write(&p, ">s1\nATGC\n").unwrap(); // truncate
-        let result = pass2_extract(&p, o, &v, 2, r.seq_length, false);
+        let result = extract(&p, o, &mut v, &r, false, &lk);
         assert!(result.is_err());
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
+    }
+    #[test] fn test_name_mismatch() {
+        // B7: detect reordered sequences between passes
+        let p = tmp("nmb", ">s1\nATGC\n>s2\nATCC\n");
+        let lk = build_lookup(false);
+        let r = pass1_scan(&p, &lk).unwrap();
+        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
+        // Rewrite file with swapped names
+        std::fs::write(&p, ">s2\nATGC\n>s1\nATCC\n").unwrap();
+        let o = "/tmp/snpick_t_nmb_out.fa";
+        let result = extract(&p, o, &mut v, &r, false, &lk);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("s2") && err_msg.contains("s1"));
         std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
 }
