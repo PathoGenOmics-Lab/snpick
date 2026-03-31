@@ -3,6 +3,8 @@
 //! Builds a per-position bitmask by OR-ing each sequence's nucleotide flags,
 //! then classifies positions as variable (>1 allele), constant, or ambiguous.
 
+use rayon::prelude::*;
+
 use crate::fasta::FastaRecord;
 use crate::types::*;
 
@@ -34,6 +36,44 @@ pub fn pass1_scan(
     // Prefault all pages into RAM before the hot loop
     prefault(data);
 
+    // Parallel: each thread scans a chunk of sequences into its own bitmask,
+    // then merge all partial bitmasks with OR. Threads share the mmap read-only.
+    let num_threads = rayon::current_num_threads().min(records.len());
+
+    // Parallelism only pays off when there's enough work per thread.
+    // Threshold: total scan work > ~200M bases (e.g., 50 seqs × 4M bp).
+    let total_work = records.len() * seq_length;
+    if num_threads <= 1 || total_work < 200_000_000 {
+        // Sequential fallback for small inputs
+        scan_sequential(data, records, seq_length, layout, lookup, &mut bitmask);
+    } else {
+        // Split records into chunks, one per thread
+        let chunk_size = records.len().div_ceil(num_threads);
+        let partial_bitmasks: Vec<Vec<u8>> = records
+            .par_chunks(chunk_size)
+            .map(|chunk| {
+                let mut local_bm = vec![0u8; seq_length];
+                scan_sequential(data, chunk, seq_length, layout, lookup, &mut local_bm);
+                local_bm
+            })
+            .collect();
+
+        // Merge: OR all partial bitmasks into the final one
+        for partial in &partial_bitmasks {
+            for (bm, &p) in bitmask.iter_mut().zip(partial.iter()) {
+                *bm |= p;
+            }
+        }
+    }
+
+    bitmask
+}
+
+/// Sequential scan of a set of records into a bitmask.
+fn scan_sequential(
+    data: &[u8], records: &[FastaRecord], seq_length: usize,
+    layout: SeqLayout, lookup: &[u8; 256], bitmask: &mut [u8],
+) {
     if layout.single_line {
         for rec in records {
             let seq = &data[rec.seq_offset..rec.seq_offset + seq_length];
@@ -55,8 +95,6 @@ pub fn pass1_scan(
             }
         }
     }
-
-    bitmask
 }
 
 /// Classify positions into variable, constant, or ambiguous-only.
