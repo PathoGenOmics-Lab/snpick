@@ -1,641 +1,711 @@
-// Necessary imports
-use bio::io::fasta;
+use bio::io::fasta::{self, FastaRead};
 use clap::Parser;
 use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Write};
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
-use chrono::Local;
-use sysinfo::{Pid, System};
-use std::collections::{HashSet, HashMap};
+use std::time::{Duration, Instant};
 
-/// snpick: A tool to extract variable sites from a FASTA alignment and generate a VCF with actual bases, including ambiguous bases and codons.
+use chrono::Local;
+
+// =============================================================================
+// CLI
+// =============================================================================
+
 #[derive(Parser, Debug)]
 #[command(
     name = "snpick",
     version = env!("CARGO_PKG_VERSION"),
     author = "Paula Ruiz-Rodriguez <paula.ruiz.rodriguez@csic.es>",
-    about = "A fast and efficient tool for extracting variable sites and generating a VCF with actual bases, including ambiguous bases and codons."
+    about = "A fast, memory-efficient tool for extracting variable sites from FASTA alignments and generating VCF output compatible with RAxML/IQ-TREE ASC."
 )]
 struct Args {
     /// Input FASTA alignment file
-    #[arg(short, long, help = "Input FASTA alignment file")]
+    #[arg(short, long)]
     fasta: String,
 
     /// Output FASTA file with variable sites
-    #[arg(short, long, help = "Output FASTA file with variable sites")]
+    #[arg(short, long)]
     output: String,
 
-    /// Number of threads to use (optional)
-    #[arg(short, long, default_value_t = 4, help = "Number of threads to use (optional)")]
+    /// Number of threads (reserved for future use)
+    #[arg(short, long, default_value_t = 1, hide = true)]
     threads: usize,
 
-    /// Consider the '-' (gap) symbol in variable site detection
-    #[arg(short = 'g', long, help = "Consider the '-' (gap) symbol in variable site detection")]
+    /// Consider '-' (gap) as a distinct character in variant detection
+    #[arg(short = 'g', long)]
     include_gaps: bool,
 
-    /// Generate VCF file with variable sites
-    #[arg(long, help = "Generate VCF file with variable sites")]
+    /// Generate VCF file with standard GT genotypes
+    #[arg(long)]
     vcf: bool,
 
-    /// Output VCF file (optional)
-    #[arg(long, help = "Output VCF file (optional)")]
+    /// Output VCF file path (default: output.vcf)
+    #[arg(long)]
     vcf_output: Option<String>,
 }
 
-/// Converts a nucleotide to a bitmask for variable site detection.
-/// Returns None for ambiguous/unknown bases (they are excluded from variant calling).
-fn nucleotide_to_bit(nuc: u8, include_gaps: bool) -> Option<u8> {
-    match nuc.to_ascii_uppercase() {
-        b'A' => Some(0b000001),
-        b'C' => Some(0b000010),
-        b'G' => Some(0b000100),
-        b'T' => Some(0b001000),
-        b'-' if include_gaps => Some(0b010000),
-        _ => None,
+// =============================================================================
+// Lookup table: nucleotide byte → bitmask (avoids branching in hot loop)
+// =============================================================================
+
+const BIT_A: u8 = 0b00001;
+const BIT_C: u8 = 0b00010;
+const BIT_G: u8 = 0b00100;
+const BIT_T: u8 = 0b01000;
+const BIT_GAP: u8 = 0b10000;
+
+fn build_lookup(include_gaps: bool) -> [u8; 256] {
+    let mut t = [0u8; 256];
+    t[b'A' as usize] = BIT_A;
+    t[b'a' as usize] = BIT_A;
+    t[b'C' as usize] = BIT_C;
+    t[b'c' as usize] = BIT_C;
+    t[b'G' as usize] = BIT_G;
+    t[b'g' as usize] = BIT_G;
+    t[b'T' as usize] = BIT_T;
+    t[b't' as usize] = BIT_T;
+    if include_gaps {
+        t[b'-' as usize] = BIT_GAP;
+    }
+    t
+}
+
+/// Decode bitmask bits into sorted nucleotide bytes
+fn bits_to_bases(bits: u8, include_gaps: bool) -> Vec<u8> {
+    let mut v = Vec::with_capacity(5);
+    if bits & BIT_A != 0 { v.push(b'A'); }
+    if bits & BIT_C != 0 { v.push(b'C'); }
+    if bits & BIT_G != 0 { v.push(b'G'); }
+    if bits & BIT_T != 0 { v.push(b'T'); }
+    if include_gaps && bits & BIT_GAP != 0 { v.push(b'-'); }
+    v
+}
+
+// =============================================================================
+// Data structures
+// =============================================================================
+
+struct VariablePosition {
+    index: usize,
+    ref_base: u8,
+    alt_bases: Vec<u8>,
+}
+
+struct ConstantSiteCounts {
+    a: usize,
+    c: usize,
+    g: usize,
+    t: usize,
+}
+
+impl std::fmt::Display for ConstantSiteCounts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "A:{} C:{} G:{} T:{}", self.a, self.c, self.g, self.t)
     }
 }
 
-fn main() -> io::Result<()> {
-    let args = Args::parse();
-
-    let input_filename = args.fasta;
-    let output_filename = args.output;
-    let num_threads = args.threads;
-    let include_gaps = args.include_gaps;
-    let generate_vcf = args.vcf;
-    let vcf_output_filename = args.vcf_output.unwrap_or_else(|| "output.vcf".to_string());
-
-    // Configure a local thread pool for Rayon
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()
-        .expect("Failed to build Rayon thread pool");
-
-    // Initialize system for process-level RAM usage reporting (#15)
-    let system = Arc::new(Mutex::new(System::new_all()));
-
-    pool.install(|| {
-        // Step 1: Read sequences and identify variable positions
-        println!("Starting Step 1: Reading sequences and identifying variable positions...");
-        let (sequences, sample_names, seq_length) =
-            read_sequences(&input_filename)
-                .expect("Failed to read input FASTA");
-
-        let variable_positions =
-            identify_variable_positions(&sequences, seq_length, include_gaps);
-        println!(
-            "Step 1 Completed: Found {} variable positions.",
-            variable_positions.len()
-        );
-
-        if variable_positions.is_empty() {
-            eprintln!("No variable positions found in the alignment.");
-            std::process::exit(0);
-        }
-
-        // Step 2: Extract variable positions and write to output file
-        println!("Starting Step 2: Extracting variable positions and writing to output...");
-        extract_and_write_variables(
-            &sequences,
-            &sample_names,
-            &output_filename,
-            &variable_positions,
-            &system,
-        )
-        .expect("Failed to extract and write variable positions");
-        println!("Variable positions alignment written to {}", output_filename);
-
-        // Step 3: Generate VCF if requested
-        if generate_vcf {
-            println!("Generating VCF file...");
-            generate_vcf_file(
-                &sequences,
-                &variable_positions,
-                &vcf_output_filename,
-                &sample_names,
-                seq_length,
-            )
-            .expect("Failed to generate VCF file");
-            println!("VCF file generated: {}", vcf_output_filename);
-        }
-    });
-
-    Ok(())
-}
-
-/// Information about a variable position (no genotype storage — extracted on demand from sequences)
-struct VariablePositionInfo {
-    position: usize,
-    reference_base: u8,
-    alternate_bases: Vec<u8>,
-}
-
-/// Read all sequences from a FASTA file into memory
-fn read_sequences(input_filename: &str) -> io::Result<(Vec<Vec<u8>>, Vec<String>, usize)> {
-    let input_file = File::open(input_filename)?;
-    let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file);
-    let fasta_reader = fasta::Reader::new(reader);
-
-    let mut sequences = Vec::new();
-    let mut sample_names = Vec::new();
-
-    for result in fasta_reader.records() {
-        let record = result?;
-        sample_names.push(record.id().to_string());
-        sequences.push(record.seq().to_owned());
+impl ConstantSiteCounts {
+    fn total(&self) -> usize {
+        self.a + self.c + self.g + self.t
     }
 
-    if sequences.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "The input FASTA file is empty."));
+    /// Format for IQ-TREE --fconst / RAxML --asc-corr
+    fn fconst(&self) -> String {
+        format!("{},{},{},{}", self.a, self.c, self.g, self.t)
     }
-
-    let seq_length = sequences[0].len();
-    for (i, seq) in sequences.iter().enumerate() {
-        if seq.len() != seq_length {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "Sequence '{}' has length {} but expected {} (same as first sequence).",
-                    sample_names[i], seq.len(), seq_length
-                ),
-            ));
-        }
-    }
-
-    println!(
-        "[{}] Read {} sequences of length {}.",
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-        sequences.len(),
-        seq_length
-    );
-
-    Ok((sequences, sample_names, seq_length))
 }
 
-/// Identify variable positions using the first sequence as reference.
-/// Genotypes are NOT stored here — they are extracted on demand from the
-/// original sequences, saving N × M bytes of redundant memory.
-fn identify_variable_positions(
-    sequences: &[Vec<u8>],
+// =============================================================================
+// PASS 1 — Streaming bitmask scan
+// Memory: O(L) for bitmask + O(L) for reference sequence + O(N) for names
+// =============================================================================
+
+#[derive(Debug)]
+struct ScanResult {
+    ref_seq: Vec<u8>,
+    bitmask: Vec<u8>,
+    sample_names: Vec<String>,
     seq_length: usize,
-    include_gaps: bool,
-) -> Vec<VariablePositionInfo> {
+}
+
+fn pass1_scan(input: &str, lookup: &[u8; 256]) -> io::Result<ScanResult> {
+    let file = File::open(input)?;
+    let reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    let mut fasta_reader = fasta::Reader::new(reader);
+    let mut record = fasta::Record::new();
+
+    let mut ref_seq: Vec<u8> = Vec::new();
+    let mut bitmask: Vec<u8> = Vec::new();
+    let mut sample_names: Vec<String> = Vec::new();
+    let mut seq_length = 0usize;
+    let mut count = 0usize;
+
     let pb = ProgressBar::new_spinner();
     pb.set_style(
         ProgressStyle::default_spinner()
-            .template("{spinner:.green} Processing positions: {pos}/{len}")
+            .template("{spinner:.green} Scanned {pos} sequences")
             .unwrap(),
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    let pos_counter = AtomicUsize::new(0);
-    let ref_seq = &sequences[0];
+    loop {
+        fasta_reader.read(&mut record)?;
+        if record.is_empty() {
+            break;
+        }
 
-    let mut variable_positions: Vec<VariablePositionInfo> = (0..seq_length)
-        .into_par_iter()
-        .filter_map(|pos| {
-            let mut seen = HashSet::new();
+        let seq = record.seq();
 
-            for seq in sequences {
-                let nuc = seq[pos];
-                if nucleotide_to_bit(nuc, include_gaps).is_some() {
-                    seen.insert(nuc.to_ascii_uppercase());
-                }
-            }
+        if count == 0 {
+            seq_length = seq.len();
+            bitmask = vec![0u8; seq_length];
+            ref_seq = seq.to_vec();
+        } else if seq.len() != seq_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Sequence '{}' has length {} but expected {}.",
+                    record.id(),
+                    seq.len(),
+                    seq_length
+                ),
+            ));
+        }
 
-            // Update progress every 10K positions to reduce contention
-            let current = pos_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            if current % 10_000 == 0 || current == seq_length {
-                pb.set_position(current as u64);
-                pb.set_length(seq_length as u64);
-            }
+        sample_names.push(record.id().to_string());
 
-            if seen.len() > 1 {
-                let reference_base = ref_seq[pos].to_ascii_uppercase();
+        // Hot loop: update bitmask with lookup table — no branches
+        let bm = &mut bitmask;
+        for (pos, &nuc) in seq.iter().enumerate() {
+            bm[pos] |= lookup[nuc as usize];
+        }
 
-                let mut alternate_bases: Vec<u8> = seen
-                    .into_iter()
-                    .filter(|&nuc| nuc != reference_base)
-                    .collect();
-                alternate_bases.sort();
-
-                Some(VariablePositionInfo {
-                    position: pos,
-                    reference_base,
-                    alternate_bases,
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Sort by position for deterministic output
-    variable_positions.sort_by_key(|info| info.position);
-
-    pb.finish_with_message("Position processing completed.");
-
-    println!(
-        "[{}] Variable position identification completed.",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    );
-    println!("Total sequences processed: {}", sequences.len());
-
-    variable_positions
-}
-
-/// Report process-level RAM usage (not system-wide) (#15)
-fn report_process_memory(system: &Arc<Mutex<System>>, current: usize) {
-    if let Ok(mut sys) = system.lock() {
-        let pid = Pid::from_u32(std::process::id());
-        sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
-        if let Some(process) = sys.process(pid) {
-            println!(
-                "[{}] Written {} sequences. Process RSS: {} MB.",
-                Local::now().format("%Y-%m-%d %H:%M:%S"),
-                current,
-                process.memory() / (1024 * 1024)
-            );
+        count += 1;
+        if count % 1000 == 0 {
+            pb.set_position(count as u64);
         }
     }
+
+    pb.finish_and_clear();
+
+    if count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Input FASTA file is empty.",
+        ));
+    }
+
+    eprintln!(
+        "[{}] Pass 1: Scanned {} sequences of length {}.",
+        Local::now().format("%H:%M:%S"),
+        count,
+        seq_length
+    );
+
+    Ok(ScanResult {
+        ref_seq,
+        bitmask,
+        sample_names,
+        seq_length,
+    })
 }
 
-/// Extract variable positions and write to the output FASTA file (deterministic order)
-fn extract_and_write_variables(
-    sequences: &[Vec<u8>],
-    sample_names: &[String],
-    output_filename: &str,
-    variable_positions: &[VariablePositionInfo],
-    system: &Arc<Mutex<System>>,
-) -> io::Result<()> {
-    let output_file = File::create(output_filename)?;
-    let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, output_file);
+// =============================================================================
+// Analyze bitmask → variable positions + constant site counts
+// =============================================================================
 
-    let positions: Vec<usize> = variable_positions.iter().map(|info| info.position).collect();
-    let total_sequences = sequences.len();
+fn analyze_bitmask(
+    bitmask: &[u8],
+    ref_seq: &[u8],
+    lookup: &[u8; 256],
+    include_gaps: bool,
+) -> (Vec<VariablePosition>, ConstantSiteCounts) {
+    let mut vars = Vec::new();
+    let mut cs = ConstantSiteCounts {
+        a: 0,
+        c: 0,
+        g: 0,
+        t: 0,
+    };
 
-    let pb_write = ProgressBar::new_spinner();
-    pb_write.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} Writing sequences: {pos}/{len}")
-            .unwrap(),
+    for (pos, &bits) in bitmask.iter().enumerate() {
+        let ones = bits.count_ones();
+
+        if ones > 1 {
+            // Variable position
+            let rb_raw = ref_seq[pos].to_ascii_uppercase();
+            let rb_has_bit = lookup[rb_raw as usize] != 0;
+
+            // If reference is a standard base, use it; otherwise pick first from bitmask
+            let ref_base = if rb_has_bit {
+                rb_raw
+            } else {
+                // Ref is ambiguous (N, R, etc.) — pick first standard base
+                let all = bits_to_bases(bits, include_gaps);
+                all[0]
+            };
+
+            let alt_bases: Vec<u8> = bits_to_bases(bits, include_gaps)
+                .into_iter()
+                .filter(|&b| b != ref_base)
+                .collect();
+
+            vars.push(VariablePosition {
+                index: pos,
+                ref_base,
+                alt_bases,
+            });
+        } else if ones == 1 {
+            // Constant site
+            if bits & BIT_A != 0 {
+                cs.a += 1;
+            } else if bits & BIT_C != 0 {
+                cs.c += 1;
+            } else if bits & BIT_G != 0 {
+                cs.g += 1;
+            } else if bits & BIT_T != 0 {
+                cs.t += 1;
+            }
+            // gap-only positions are not counted as constant for ASC
+        }
+        // ones == 0: all ambiguous → skip
+    }
+
+    (vars, cs)
+}
+
+// =============================================================================
+// PASS 2 — Stream FASTA → write variable-sites FASTA + collect VCF genotypes
+// Memory: O(V) for positions + O(V × N) if VCF requested
+// =============================================================================
+
+fn pass2_extract(
+    input: &str,
+    output: &str,
+    pos_indices: &[usize],
+    num_var: usize,
+    total_sequences: usize,
+    collect_vcf: bool,
+) -> io::Result<Option<Vec<Vec<u8>>>> {
+    let file = File::open(input)?;
+    let reader = BufReader::with_capacity(8 * 1024 * 1024, file);
+    let mut fasta_reader = fasta::Reader::new(reader);
+    let mut record = fasta::Record::new();
+
+    let out_file = File::create(output)?;
+    let mut writer = BufWriter::with_capacity(8 * 1024 * 1024, out_file);
+
+    // VCF genotype matrix: genotypes[var_idx] = Vec of bases per sample
+    let mut vcf_geno: Vec<Vec<u8>> = if collect_vcf {
+        (0..num_var)
+            .map(|_| Vec::with_capacity(total_sequences))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let pb = ProgressBar::new(total_sequences as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{bar:40.cyan/blue}] {pos}/{len} sequences")
+            .unwrap()
+            .progress_chars("█▉▊▋▌▍▎▏ "),
     );
-    pb_write.enable_steady_tick(Duration::from_millis(100));
-    pb_write.set_length(total_sequences as u64);
 
-    for (i, (seq, name)) in sequences.iter().zip(sample_names.iter()).enumerate() {
-        let var_seq: Vec<u8> = positions.iter().map(|&pos| seq[pos]).collect();
-        let var_seq_str = String::from_utf8_lossy(&var_seq);
+    let mut count = 0u64;
 
-        writeln!(writer, ">{}", name)?;
-        writeln!(writer, "{}", var_seq_str)?;
-
-        let current = i + 1;
-        if current % 10_000 == 0 || current == total_sequences {
-            pb_write.set_position(current as u64);
+    loop {
+        fasta_reader.read(&mut record)?;
+        if record.is_empty() {
+            break;
         }
 
-        if current % 100_000 == 0 {
-            report_process_memory(system, current);
+        let seq = record.seq();
+
+        // Extract variable-site bases
+        let var_seq: Vec<u8> = pos_indices.iter().map(|&p| seq[p]).collect();
+
+        // Write FASTA record (raw bytes — no UTF-8 conversion needed)
+        writer.write_all(b">")?;
+        writer.write_all(record.id().as_bytes())?;
+        writer.write_all(b"\n")?;
+        writer.write_all(&var_seq)?;
+        writer.write_all(b"\n")?;
+
+        // Collect VCF genotypes
+        if collect_vcf {
+            for (vi, &nuc) in var_seq.iter().enumerate() {
+                vcf_geno[vi].push(nuc.to_ascii_uppercase());
+            }
+        }
+
+        count += 1;
+        if count % 1000 == 0 {
+            pb.set_position(count);
         }
     }
 
     writer.flush()?;
+    pb.finish_and_clear();
 
-    pb_write.finish_with_message(format!(
-        "Completed: {} sequences written.",
-        total_sequences
-    ));
-
-    println!(
-        "[{}] Total sequences written: {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S"),
-        total_sequences
+    eprintln!(
+        "[{}] Pass 2: Wrote {} sequences to {}.",
+        Local::now().format("%H:%M:%S"),
+        count,
+        output
     );
 
-    Ok(())
+    if collect_vcf {
+        Ok(Some(vcf_geno))
+    } else {
+        Ok(None)
+    }
 }
 
-/// Generate a VCF 4.2 file with standard GT genotypes.
-/// Genotypes are extracted on demand from the original sequences (no redundant copy).
-fn generate_vcf_file(
-    sequences: &[Vec<u8>],
-    variable_positions: &[VariablePositionInfo],
-    vcf_output_filename: &str,
+// =============================================================================
+// Write VCF 4.2 with standard GT genotypes
+// =============================================================================
+
+fn write_vcf(
+    vcf_geno: &[Vec<u8>],
+    variable_positions: &[VariablePosition],
+    vcf_path: &str,
     sample_names: &[String],
     seq_length: usize,
 ) -> io::Result<()> {
-    let output_file = File::create(vcf_output_filename)?;
-    let mut writer = BufWriter::new(output_file);
+    let out = File::create(vcf_path)?;
+    let mut w = BufWriter::new(out);
 
-    // VCF header
-    writeln!(writer, "##fileformat=VCFv4.2")?;
-    writeln!(writer, "##source=snpick")?;
-    writeln!(writer, "##reference=first_sequence")?;
-    writeln!(writer, "##contig=<ID=1,length={}>", seq_length)?;
+    // Header
+    writeln!(w, "##fileformat=VCFv4.2")?;
+    writeln!(w, "##source=snpick")?;
+    writeln!(w, "##reference=first_sequence")?;
+    writeln!(w, "##contig=<ID=1,length={}>", seq_length)?;
     writeln!(
-        writer,
+        w,
         "##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of Samples With Data\">"
     )?;
     writeln!(
-        writer,
+        w,
         "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
     )?;
 
-    write!(writer, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")?;
-    for sample_name in sample_names {
-        write!(writer, "\t{}", sample_name)?;
+    write!(w, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")?;
+    for name in sample_names {
+        write!(w, "\t{}", name)?;
     }
-    writeln!(writer)?;
+    writeln!(w)?;
 
-    for info in variable_positions {
-        let chrom = "1";
-        let pos = info.position + 1; // VCF is 1-based
-        let ref_base = info.reference_base as char;
+    let ns = sample_names.len();
 
-        // ALT alleles separated by commas; gaps represented as * (VCF 4.2)
-        let alt_strings: Vec<String> = info
-            .alternate_bases
+    for (vi, vp) in variable_positions.iter().enumerate() {
+        let alt: String = vp
+            .alt_bases
             .iter()
             .map(|&b| {
-                let c = b as char;
-                if c == '-' { "*".to_string() } else { c.to_string() }
+                if b == b'-' {
+                    "*".to_string()
+                } else {
+                    (b as char).to_string()
+                }
             })
-            .collect();
-        let alt = alt_strings.join(",");
+            .collect::<Vec<_>>()
+            .join(",");
 
-        let info_field = format!("NS={}", sample_names.len());
-
-        // Build allele index map: REF=0, ALT1=1, ALT2=2, ...
-        let mut allele_index: HashMap<u8, usize> = HashMap::new();
-        allele_index.insert(info.reference_base, 0);
-        for (i, &alt_base) in info.alternate_bases.iter().enumerate() {
-            allele_index.insert(alt_base, i + 1);
+        // Build allele index: REF=0, ALT1=1, ALT2=2, ...
+        let mut aidx: HashMap<u8, usize> = HashMap::with_capacity(5);
+        aidx.insert(vp.ref_base, 0);
+        for (i, &ab) in vp.alt_bases.iter().enumerate() {
+            aidx.insert(ab, i + 1);
         }
 
         write!(
-            writer,
-            "{}\t{}\t.\t{}\t{}\t.\tPASS\t{}\tGT",
-            chrom, pos, ref_base, alt, info_field
+            w,
+            "1\t{}\t.\t{}\t{}\t.\tPASS\tNS={}\tGT",
+            vp.index + 1,
+            vp.ref_base as char,
+            alt,
+            ns
         )?;
 
-        // Extract genotypes on demand from original sequences
-        for seq in sequences {
-            let genotype_base = seq[info.position].to_ascii_uppercase();
-            let gt = match allele_index.get(&genotype_base) {
-                Some(idx) => idx.to_string(),
-                None => ".".to_string(), // Ambiguous or unknown bases → missing (#13)
-            };
-            write!(writer, "\t{}", gt)?;
+        for &gt_base in &vcf_geno[vi] {
+            match aidx.get(&gt_base) {
+                Some(idx) => write!(w, "\t{}", idx)?,
+                None => write!(w, "\t.")?,
+            }
         }
-        writeln!(writer)?;
+        writeln!(w)?;
     }
 
-    writer.flush()?;
+    w.flush()?;
+    Ok(())
+}
+
+// =============================================================================
+// main
+// =============================================================================
+
+fn main() -> io::Result<()> {
+    let args = Args::parse();
+    let start = Instant::now();
+    let lookup = build_lookup(args.include_gaps);
+
+    // ── Pass 1: stream FASTA → bitmask (O(L) memory) ────────────────────
+    let scan = pass1_scan(&args.fasta, &lookup)?;
+    let seq_length = scan.seq_length;
+    let num_samples = scan.sample_names.len();
+
+    // ── Analyze bitmask → variable positions + constant site counts ──────
+    let (variable_positions, constant) =
+        analyze_bitmask(&scan.bitmask, &scan.ref_seq, &lookup, args.include_gaps);
+
+    // Free bitmask + ref_seq — no longer needed
+    drop(scan.bitmask);
+    drop(scan.ref_seq);
+
+    let num_var = variable_positions.len();
+
+    eprintln!(
+        "[{}] {} variable sites, {} constant sites ({}).",
+        Local::now().format("%H:%M:%S"),
+        num_var,
+        constant.total(),
+        constant
+    );
+    eprintln!(
+        "[{}] ASC fconst: {}",
+        Local::now().format("%H:%M:%S"),
+        constant.fconst()
+    );
+
+    if num_var == 0 {
+        eprintln!("No variable positions found in the alignment.");
+        return Ok(());
+    }
+
+    // Precompute position indices
+    let pos_indices: Vec<usize> = variable_positions.iter().map(|v| v.index).collect();
+
+    // ── Pass 2: stream FASTA → write output FASTA (+ VCF genotypes) ─────
+    let vcf_geno = pass2_extract(
+        &args.fasta,
+        &args.output,
+        &pos_indices,
+        num_var,
+        num_samples,
+        args.vcf,
+    )?;
+
+    // ── Write VCF if requested ───────────────────────────────────────────
+    if let Some(geno) = &vcf_geno {
+        let vcf_path = args
+            .vcf_output
+            .unwrap_or_else(|| "output.vcf".to_string());
+        write_vcf(
+            geno,
+            &variable_positions,
+            &vcf_path,
+            &scan.sample_names,
+            seq_length,
+        )?;
+        eprintln!(
+            "[{}] VCF written to {}.",
+            Local::now().format("%H:%M:%S"),
+            vcf_path
+        );
+    }
+
+    let elapsed = start.elapsed();
+    eprintln!(
+        "[{}] Done in {:.2}s. {} variable sites from {} sequences × {} positions.",
+        Local::now().format("%H:%M:%S"),
+        elapsed.as_secs_f64(),
+        num_var,
+        num_samples,
+        seq_length
+    );
 
     Ok(())
 }
 
 // =============================================================================
-// Tests (#12)
+// Tests
 // =============================================================================
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
-    /// Helper: write a temp FASTA and return its path
-    fn write_temp_fasta(name: &str, content: &str) -> String {
+    fn write_temp(name: &str, content: &str) -> String {
         let path = format!("/tmp/snpick_test_{}.fa", name);
-        let mut f = File::create(&path).unwrap();
-        f.write_all(content.as_bytes()).unwrap();
+        std::fs::write(&path, content).unwrap();
         path
     }
 
-    // --- nucleotide_to_bit ---
+    // --- lookup table ---
 
     #[test]
-    fn test_nucleotide_to_bit_standard() {
-        assert_eq!(nucleotide_to_bit(b'A', false), Some(0b000001));
-        assert_eq!(nucleotide_to_bit(b'a', false), Some(0b000001));
-        assert_eq!(nucleotide_to_bit(b'C', false), Some(0b000010));
-        assert_eq!(nucleotide_to_bit(b'G', false), Some(0b000100));
-        assert_eq!(nucleotide_to_bit(b'T', false), Some(0b001000));
-        assert_eq!(nucleotide_to_bit(b't', false), Some(0b001000));
+    fn test_lookup_standard_bases() {
+        let lk = build_lookup(false);
+        assert_eq!(lk[b'A' as usize], BIT_A);
+        assert_eq!(lk[b'a' as usize], BIT_A);
+        assert_eq!(lk[b'C' as usize], BIT_C);
+        assert_eq!(lk[b'G' as usize], BIT_G);
+        assert_eq!(lk[b'T' as usize], BIT_T);
+        assert_eq!(lk[b't' as usize], BIT_T);
     }
 
     #[test]
-    fn test_nucleotide_to_bit_gap() {
-        assert_eq!(nucleotide_to_bit(b'-', false), None);
-        assert_eq!(nucleotide_to_bit(b'-', true), Some(0b010000));
+    fn test_lookup_gaps() {
+        let no_gap = build_lookup(false);
+        assert_eq!(no_gap[b'-' as usize], 0);
+        let with_gap = build_lookup(true);
+        assert_eq!(with_gap[b'-' as usize], BIT_GAP);
     }
 
     #[test]
-    fn test_nucleotide_to_bit_ambiguous() {
-        assert_eq!(nucleotide_to_bit(b'N', false), None);
-        assert_eq!(nucleotide_to_bit(b'R', false), None);
-        assert_eq!(nucleotide_to_bit(b'Y', false), None);
-        assert_eq!(nucleotide_to_bit(b'?', false), None);
+    fn test_lookup_ambiguous_is_zero() {
+        let lk = build_lookup(false);
+        assert_eq!(lk[b'N' as usize], 0);
+        assert_eq!(lk[b'R' as usize], 0);
+        assert_eq!(lk[b'Y' as usize], 0);
+        assert_eq!(lk[b'?' as usize], 0);
     }
 
-    // --- read_sequences ---
+    // --- bits_to_bases ---
 
     #[test]
-    fn test_read_sequences_basic() {
-        let path = write_temp_fasta("basic", ">s1\nATGC\n>s2\nATCC\n");
-        let (seqs, names, len) = read_sequences(&path).unwrap();
-        assert_eq!(names, vec!["s1", "s2"]);
-        assert_eq!(seqs.len(), 2);
-        assert_eq!(len, 4);
+    fn test_bits_to_bases() {
+        assert_eq!(bits_to_bases(BIT_A | BIT_T, false), vec![b'A', b'T']);
+        assert_eq!(
+            bits_to_bases(BIT_A | BIT_C | BIT_G | BIT_T, false),
+            vec![b'A', b'C', b'G', b'T']
+        );
+        assert_eq!(
+            bits_to_bases(BIT_A | BIT_GAP, true),
+            vec![b'A', b'-']
+        );
+        assert_eq!(bits_to_bases(BIT_A | BIT_GAP, false), vec![b'A']);
+    }
+
+    // --- pass1_scan ---
+
+    #[test]
+    fn test_scan_basic() {
+        let path = write_temp("scan_basic", ">s1\nATGC\n>s2\nATCC\n");
+        let lk = build_lookup(false);
+        let r = pass1_scan(&path, &lk).unwrap();
+        assert_eq!(r.sample_names, vec!["s1", "s2"]);
+        assert_eq!(r.seq_length, 4);
+        assert_eq!(r.ref_seq, b"ATGC");
+        // pos 0: A only, pos 1: T only, pos 2: G|C, pos 3: C only
+        assert_eq!(r.bitmask[0].count_ones(), 1); // A
+        assert_eq!(r.bitmask[1].count_ones(), 1); // T
+        assert_eq!(r.bitmask[2].count_ones(), 2); // G + C
+        assert_eq!(r.bitmask[3].count_ones(), 1); // C
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn test_read_sequences_empty() {
-        let path = write_temp_fasta("empty", "");
-        let result = read_sequences(&path);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty"));
+    fn test_scan_empty() {
+        let path = write_temp("scan_empty", "");
+        let lk = build_lookup(false);
+        assert!(pass1_scan(&path, &lk).is_err());
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn test_read_sequences_unequal_lengths() {
-        let path = write_temp_fasta("unequal", ">s1\nATGC\n>s2\nAT\n");
-        let result = read_sequences(&path);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("length"));
+    fn test_scan_unequal_lengths() {
+        let path = write_temp("scan_uneq", ">s1\nATGC\n>s2\nAT\n");
+        let lk = build_lookup(false);
+        let r = pass1_scan(&path, &lk);
+        assert!(r.is_err());
+        assert!(r.unwrap_err().to_string().contains("length"));
         std::fs::remove_file(&path).ok();
     }
 
-    // --- identify_variable_positions ---
+    // --- analyze_bitmask ---
 
     #[test]
-    fn test_identify_no_variants() {
-        let seqs = vec![b"AAAA".to_vec(), b"AAAA".to_vec()];
-        let result = identify_variable_positions(&seqs, 4, false);
-        assert!(result.is_empty());
+    fn test_analyze_no_variants() {
+        let bitmask = vec![BIT_A, BIT_T, BIT_G, BIT_C];
+        let ref_seq = b"ATGC";
+        let lk = build_lookup(false);
+        let (vars, cs) = analyze_bitmask(&bitmask, ref_seq, &lk, false);
+        assert!(vars.is_empty());
+        assert_eq!(cs.total(), 4);
+        assert_eq!(cs.a, 1);
+        assert_eq!(cs.t, 1);
+        assert_eq!(cs.g, 1);
+        assert_eq!(cs.c, 1);
     }
 
     #[test]
-    fn test_identify_single_variant() {
-        let seqs = vec![b"ATGC".to_vec(), b"ACGC".to_vec()];
-        let result = identify_variable_positions(&seqs, 4, false);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].position, 1);
-        assert_eq!(result[0].reference_base, b'T');
-        assert_eq!(result[0].alternate_bases, vec![b'C']);
+    fn test_analyze_single_variant() {
+        let bitmask = vec![BIT_A, BIT_T | BIT_C, BIT_G, BIT_C];
+        let ref_seq = b"ATGC";
+        let lk = build_lookup(false);
+        let (vars, cs) = analyze_bitmask(&bitmask, ref_seq, &lk, false);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].index, 1);
+        assert_eq!(vars[0].ref_base, b'T');
+        assert_eq!(vars[0].alt_bases, vec![b'C']);
+        assert_eq!(cs.total(), 3);
     }
 
     #[test]
-    fn test_identify_multiple_variants() {
-        let seqs = vec![
-            b"ATGC".to_vec(),
-            b"CTGC".to_vec(),
-            b"ATGA".to_vec(),
-        ];
-        let result = identify_variable_positions(&seqs, 4, false);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].position, 0); // A vs C
-        assert_eq!(result[1].position, 3); // C vs A
+    fn test_analyze_multiallelic() {
+        let bitmask = vec![BIT_A | BIT_C | BIT_G | BIT_T];
+        let ref_seq = b"A";
+        let lk = build_lookup(false);
+        let (vars, _) = analyze_bitmask(&bitmask, ref_seq, &lk, false);
+        assert_eq!(vars.len(), 1);
+        assert_eq!(vars[0].ref_base, b'A');
+        assert_eq!(vars[0].alt_bases, vec![b'C', b'G', b'T']);
     }
 
     #[test]
-    fn test_identify_with_gaps() {
-        let seqs = vec![b"ATGC".to_vec(), b"A-GC".to_vec()];
-        // Without gaps: no variant at pos 1 (- is ignored)
-        let result_no_gaps = identify_variable_positions(&seqs, 4, false);
-        assert!(result_no_gaps.is_empty());
-        // With gaps: variant at pos 1
-        let result_gaps = identify_variable_positions(&seqs, 4, true);
-        assert_eq!(result_gaps.len(), 1);
-        assert_eq!(result_gaps[0].position, 1);
+    fn test_analyze_ambiguous_ref() {
+        // Ref has N at a position where samples have A and C
+        let bitmask = vec![BIT_A | BIT_C];
+        let ref_seq = b"N";
+        let lk = build_lookup(false);
+        let (vars, _) = analyze_bitmask(&bitmask, ref_seq, &lk, false);
+        assert_eq!(vars.len(), 1);
+        // Should pick first standard base (A) as ref
+        assert_eq!(vars[0].ref_base, b'A');
+        assert_eq!(vars[0].alt_bases, vec![b'C']);
     }
 
     #[test]
-    fn test_identify_ambiguous_ignored() {
-        // N should be ignored — if only A and N at a position, it's NOT variable
-        let seqs = vec![b"ATGC".to_vec(), b"ANGC".to_vec()];
-        let result = identify_variable_positions(&seqs, 4, false);
-        assert!(result.is_empty());
+    fn test_constant_site_counts_fconst() {
+        let cs = ConstantSiteCounts {
+            a: 100,
+            c: 200,
+            g: 150,
+            t: 50,
+        };
+        assert_eq!(cs.fconst(), "100,200,150,50");
+        assert_eq!(cs.total(), 500);
     }
 
-    #[test]
-    fn test_identify_multiallelic() {
-        let seqs = vec![
-            b"ATGC".to_vec(),
-            b"CTGC".to_vec(),
-            b"GTGC".to_vec(),
-            b"TTGC".to_vec(),
-        ];
-        let result = identify_variable_positions(&seqs, 4, false);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].position, 0);
-        assert_eq!(result[0].reference_base, b'A');
-        assert_eq!(result[0].alternate_bases, vec![b'C', b'G', b'T']);
-    }
+    // --- end-to-end: FASTA output ---
 
     #[test]
-    fn test_positions_sorted() {
-        // Even with par_iter, positions must come out sorted
-        let mut seqs = vec![vec![b'A'; 1000], vec![b'A'; 1000]];
-        // Make positions 999, 500, 100, 0 variable
-        for &pos in &[0usize, 100, 500, 999] {
-            seqs[1][pos] = b'T';
-        }
-        let result = identify_variable_positions(&seqs, 1000, false);
-        let positions: Vec<usize> = result.iter().map(|v| v.position).collect();
-        assert_eq!(positions, vec![0, 100, 500, 999]);
-    }
+    fn test_e2e_fasta_output() {
+        let input = write_temp("e2e_fa", ">ref\nATGCATGC\n>s1\nATGTATGC\n>s2\nACGCATGC\n");
+        let output = "/tmp/snpick_test_e2e_fa_out.fa";
+        let lk = build_lookup(false);
 
-    // --- VCF format ---
+        let scan = pass1_scan(&input, &lk).unwrap();
+        let (vars, _) = analyze_bitmask(&scan.bitmask, &scan.ref_seq, &lk, false);
+        let pos_idx: Vec<usize> = vars.iter().map(|v| v.index).collect();
 
-    #[test]
-    fn test_vcf_output_format() {
-        let seqs = vec![
-            b"ATGC".to_vec(),
-            b"CTGC".to_vec(),
-            b"GTGC".to_vec(),
-        ];
-        let sample_names = vec!["ref".to_string(), "s1".to_string(), "s2".to_string()];
-        let var_pos = identify_variable_positions(&seqs, 4, false);
+        pass2_extract(&input, output, &pos_idx, vars.len(), scan.sample_names.len(), false)
+            .unwrap();
 
-        let vcf_path = "/tmp/snpick_test_vcf.vcf";
-        generate_vcf_file(&seqs, &var_pos, vcf_path, &sample_names, 4).unwrap();
-
-        let content = std::fs::read_to_string(vcf_path).unwrap();
-
-        // Check header
-        assert!(content.starts_with("##fileformat=VCFv4.2"));
-        assert!(content.contains("##FORMAT=<ID=GT,"));
-        assert!(content.contains("##contig=<ID=1,length=4>"));
-
-        // Check data line
-        let data_lines: Vec<&str> = content.lines()
-            .filter(|l| !l.starts_with('#'))
-            .collect();
-        assert_eq!(data_lines.len(), 1);
-
-        let fields: Vec<&str> = data_lines[0].split('\t').collect();
-        assert_eq!(fields[0], "1");        // CHROM
-        assert_eq!(fields[1], "1");        // POS (1-based)
-        assert_eq!(fields[3], "A");        // REF (first sequence)
-        assert_eq!(fields[4], "C,G");      // ALT (comma-separated, sorted)
-        assert_eq!(fields[8], "GT");       // FORMAT
-        assert_eq!(fields[9], "0");        // ref → 0
-        assert_eq!(fields[10], "1");       // s1 → C = 1
-        assert_eq!(fields[11], "2");       // s2 → G = 2
-
-        std::fs::remove_file(vcf_path).ok();
-    }
-
-    #[test]
-    fn test_vcf_ambiguous_genotype() {
-        let seqs = vec![
-            b"ATGC".to_vec(),
-            b"CTGC".to_vec(),
-            b"NTGC".to_vec(), // N at variable position
-        ];
-        let sample_names = vec!["ref".to_string(), "s1".to_string(), "s2".to_string()];
-        let var_pos = identify_variable_positions(&seqs, 4, false);
-
-        let vcf_path = "/tmp/snpick_test_vcf_ambig.vcf";
-        generate_vcf_file(&seqs, &var_pos, vcf_path, &sample_names, 4).unwrap();
-
-        let content = std::fs::read_to_string(vcf_path).unwrap();
-        let data_lines: Vec<&str> = content.lines()
-            .filter(|l| !l.starts_with('#'))
-            .collect();
-        let fields: Vec<&str> = data_lines[0].split('\t').collect();
-        assert_eq!(fields[11], "."); // N → missing
-
-        std::fs::remove_file(vcf_path).ok();
-    }
-
-    // --- FASTA output ---
-
-    #[test]
-    fn test_fasta_output_deterministic() {
-        let seqs = vec![
-            b"ATGCATGC".to_vec(),
-            b"ATGTATGC".to_vec(),
-            b"ACGCATGC".to_vec(),
-        ];
-        let names = vec!["ref".to_string(), "s1".to_string(), "s2".to_string()];
-        let var_pos = identify_variable_positions(&seqs, 8, false);
-        let system = Arc::new(Mutex::new(System::new_all()));
-
-        let fasta_path = "/tmp/snpick_test_fasta.fa";
-        extract_and_write_variables(&seqs, &names, fasta_path, &var_pos, &system).unwrap();
-
-        let content = std::fs::read_to_string(fasta_path).unwrap();
+        let content = std::fs::read_to_string(output).unwrap();
         let lines: Vec<&str> = content.lines().collect();
-
-        // Order must match input order
         assert_eq!(lines[0], ">ref");
         assert_eq!(lines[1], "TC");
         assert_eq!(lines[2], ">s1");
@@ -643,6 +713,106 @@ mod tests {
         assert_eq!(lines[4], ">s2");
         assert_eq!(lines[5], "CC");
 
-        std::fs::remove_file(fasta_path).ok();
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(output).ok();
+    }
+
+    // --- end-to-end: VCF output ---
+
+    #[test]
+    fn test_e2e_vcf_output() {
+        let input = write_temp("e2e_vcf_in", ">ref\nATGC\n>s1\nCTGC\n>s2\nGTGC\n>s3\nTTGC\n");
+        let fasta_out = "/tmp/snpick_test_e2e_vcf_out.fa";
+        let vcf_out = "/tmp/snpick_test_e2e_vcf_out.vcf";
+        let lk = build_lookup(false);
+
+        let scan = pass1_scan(&input, &lk).unwrap();
+        let (vars, _) = analyze_bitmask(&scan.bitmask, &scan.ref_seq, &lk, false);
+        let pos_idx: Vec<usize> = vars.iter().map(|v| v.index).collect();
+
+        let geno = pass2_extract(
+            &input,
+            fasta_out,
+            &pos_idx,
+            vars.len(),
+            scan.sample_names.len(),
+            true,
+        )
+        .unwrap()
+        .unwrap();
+
+        write_vcf(&geno, &vars, vcf_out, &scan.sample_names, scan.seq_length).unwrap();
+
+        let content = std::fs::read_to_string(vcf_out).unwrap();
+        let data: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(data.len(), 1);
+
+        let fields: Vec<&str> = data[0].split('\t').collect();
+        assert_eq!(fields[1], "1"); // POS
+        assert_eq!(fields[3], "A"); // REF
+        assert_eq!(fields[4], "C,G,T"); // ALT
+        assert_eq!(fields[8], "GT");
+        assert_eq!(fields[9], "0"); // ref → 0
+        assert_eq!(fields[10], "1"); // C → 1
+        assert_eq!(fields[11], "2"); // G → 2
+        assert_eq!(fields[12], "3"); // T → 3
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(fasta_out).ok();
+        std::fs::remove_file(vcf_out).ok();
+    }
+
+    #[test]
+    fn test_e2e_vcf_ambiguous_gt() {
+        let input = write_temp("e2e_ambig", ">ref\nATGC\n>s1\nCTGC\n>s2\nNTGC\n");
+        let fasta_out = "/tmp/snpick_test_ambig.fa";
+        let vcf_out = "/tmp/snpick_test_ambig.vcf";
+        let lk = build_lookup(false);
+
+        let scan = pass1_scan(&input, &lk).unwrap();
+        let (vars, _) = analyze_bitmask(&scan.bitmask, &scan.ref_seq, &lk, false);
+        let pos_idx: Vec<usize> = vars.iter().map(|v| v.index).collect();
+
+        let geno = pass2_extract(
+            &input,
+            fasta_out,
+            &pos_idx,
+            vars.len(),
+            scan.sample_names.len(),
+            true,
+        )
+        .unwrap()
+        .unwrap();
+
+        write_vcf(&geno, &vars, vcf_out, &scan.sample_names, scan.seq_length).unwrap();
+
+        let content = std::fs::read_to_string(vcf_out).unwrap();
+        let data: Vec<&str> = content.lines().filter(|l| !l.starts_with('#')).collect();
+        let fields: Vec<&str> = data[0].split('\t').collect();
+        assert_eq!(fields[11], "."); // N → missing
+
+        std::fs::remove_file(&input).ok();
+        std::fs::remove_file(fasta_out).ok();
+        std::fs::remove_file(vcf_out).ok();
+    }
+
+    #[test]
+    fn test_e2e_with_gaps() {
+        let input = write_temp("e2e_gaps", ">ref\nATGC\n>s1\nA-GC\n");
+        let lk_no = build_lookup(false);
+        let lk_yes = build_lookup(true);
+
+        // Without gaps
+        let scan = pass1_scan(&input, &lk_no).unwrap();
+        let (vars, _) = analyze_bitmask(&scan.bitmask, &scan.ref_seq, &lk_no, false);
+        assert!(vars.is_empty());
+
+        // With gaps
+        let scan2 = pass1_scan(&input, &lk_yes).unwrap();
+        let (vars2, _) = analyze_bitmask(&scan2.bitmask, &scan2.ref_seq, &lk_yes, true);
+        assert_eq!(vars2.len(), 1);
+        assert_eq!(vars2[0].index, 1);
+
+        std::fs::remove_file(&input).ok();
     }
 }
