@@ -80,11 +80,13 @@ fn main() -> io::Result<()> {
 
     // Execute processing within the thread pool
     pool.install(|| {
-        // Step 1: Identify variable positions and extract individual genotypes
-        println!("Starting Step 1: Identifying variable positions...");
-        let (variable_positions_info, total_sequences, sample_names) =
-            identify_variable_positions(&input_filename, &system, include_gaps)
-                .expect("Failed to identify variable positions");
+        // Step 1: Read sequences and identify variable positions
+        println!("Starting Step 1: Reading sequences and identifying variable positions...");
+        let (sequences, sample_names, seq_length) =
+            read_sequences(&input_filename)
+                .expect("Failed to read input FASTA");
+        let variable_positions_info =
+            identify_variable_positions(&sequences, seq_length, include_gaps);
         println!(
             "Step 1 Completed: Found {} variable positions.",
             variable_positions_info.len()
@@ -95,13 +97,13 @@ fn main() -> io::Result<()> {
             std::process::exit(0);
         }
 
-        // Step 2: Extract variable positions and write to output file
+        // Step 2: Extract variable positions and write to output file (deterministic order)
         println!("Starting Step 2: Extracting variable positions and writing to output...");
         extract_and_write_variables(
-            &input_filename,
+            &sequences,
+            &sample_names,
             &output_filename,
             &variable_positions_info,
-            total_sequences,
             &system,
         )
         .expect("Failed to extract and write variable positions");
@@ -114,6 +116,7 @@ fn main() -> io::Result<()> {
                 &variable_positions_info,
                 &vcf_output_filename,
                 &sample_names,
+                seq_length,
             )
             .expect("Failed to generate VCF file");
             println!("VCF file generated: {}", vcf_output_filename);
@@ -127,56 +130,59 @@ fn main() -> io::Result<()> {
 struct VariablePositionInfo {
     position: usize,
     reference_base: u8,
-    alternate_bases: HashSet<u8>,
+    alternate_bases: Vec<u8>,
     genotypes: Vec<u8>, // Bases at this position for each sample
 }
 
-/// Step 1: Identify variable positions and extract individual genotypes
-fn identify_variable_positions(
-    input_filename: &str,
-    _system: &Arc<Mutex<System>>,
-    include_gaps: bool,
-) -> io::Result<(Vec<VariablePositionInfo>, usize, Vec<String>)> {
-    // Open the input FASTA file
+/// Read all sequences from a FASTA file into memory
+fn read_sequences(input_filename: &str) -> io::Result<(Vec<Vec<u8>>, Vec<String>, usize)> {
     let input_file = File::open(input_filename)?;
     let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file);
     let fasta_reader = fasta::Reader::new(reader);
 
-    // Read all sequences and store names and sequences
     let mut sequences = Vec::new();
     let mut sample_names = Vec::new();
 
     for result in fasta_reader.records() {
         let record = result?;
-        let id = record.id().to_string();
-        let seq = record.seq().to_owned();
-        sample_names.push(id);
-        sequences.push(seq);
+        sample_names.push(record.id().to_string());
+        sequences.push(record.seq().to_owned());
     }
 
-    let total_sequences = sequences.len();
-
-    if total_sequences == 0 {
-        eprintln!("The input FASTA file is empty.");
-        return Ok((Vec::new(), 0, Vec::new()));
+    if sequences.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "The input FASTA file is empty."));
     }
 
     let seq_length = sequences[0].len();
-
-    // Verify that all sequences have the same length
-    for seq in &sequences {
+    for (i, seq) in sequences.iter().enumerate() {
         if seq.len() != seq_length {
-            eprintln!("All sequences must have the same length.");
-            return Ok((Vec::new(), 0, Vec::new()));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Sequence '{}' has length {} but expected {} (same as first sequence).",
+                    sample_names[i], seq.len(), seq_length
+                ),
+            ));
         }
     }
 
     println!(
-        "[{}] Processing {} sequences of length {}.",
+        "[{}] Read {} sequences of length {}.",
         Local::now().format("%Y-%m-%d %H:%M:%S"),
-        total_sequences,
+        sequences.len(),
         seq_length
     );
+
+    Ok((sequences, sample_names, seq_length))
+}
+
+/// Identify variable positions using the first sequence as reference (FIX #2)
+fn identify_variable_positions(
+    sequences: &[Vec<u8>],
+    seq_length: usize,
+    include_gaps: bool,
+) -> Vec<VariablePositionInfo> {
+    let total_sequences = sequences.len();
 
     // Initialize a progress spinner
     let pb = ProgressBar::new_spinner();
@@ -187,51 +193,41 @@ fn identify_variable_positions(
     );
     pb.enable_steady_tick(Duration::from_millis(100));
 
-    // Atomic counter for processed positions
     let pos_counter = AtomicUsize::new(0);
 
-    // Identify variable positions and extract genotypes
-    let variable_positions_info: Vec<VariablePositionInfo> = (0..seq_length)
+    // Use first sequence as reference (standard VCF convention)
+    let ref_seq = &sequences[0];
+
+    let mut variable_positions_info: Vec<VariablePositionInfo> = (0..seq_length)
         .into_par_iter()
         .filter_map(|pos| {
-            let mut counts = HashMap::new();
+            let mut seen = HashSet::new();
             let mut genotypes = Vec::with_capacity(total_sequences);
 
-            // Collect bases at this position for all samples
-            for seq in &sequences {
+            for seq in sequences {
                 let nuc = seq[pos];
                 genotypes.push(nuc);
-
                 if nucleotide_to_bit(nuc, include_gaps).is_some() {
-                    counts.entry(nuc).and_modify(|c| *c += 1).or_insert(1);
+                    seen.insert(nuc.to_ascii_uppercase());
                 }
             }
 
-            // Count types of nucleotides A, C, G, T (and gap if included)
-            let nucleotide_types = counts.len();
+            // Update progress every 10K positions to reduce contention
+            let current = pos_counter.fetch_add(1, Ordering::Relaxed) + 1;
+            if current % 10_000 == 0 || current == seq_length {
+                pb.set_position(current as u64);
+                pb.set_length(seq_length as u64);
+            }
 
-            // Update the progress spinner
-            let current = pos_counter.fetch_add(1, Ordering::SeqCst) + 1;
-            pb.set_position(current as u64);
-            pb.set_length(seq_length as u64);
+            if seen.len() > 1 {
+                let reference_base = ref_seq[pos].to_ascii_uppercase();
 
-            if nucleotide_types > 1 {
-                // Determine the reference base (most frequent)
-                let mut max_count = 0;
-                let mut reference_base = b'N';
-                for (&nuc, &count) in &counts {
-                    if count > max_count {
-                        max_count = count;
-                        reference_base = nuc;
-                    }
-                }
-
-                // Alternate bases
-                let alternate_bases: HashSet<u8> = counts
-                    .keys()
-                    .cloned()
+                // Alternate bases: everything that's not the reference, sorted for determinism
+                let mut alternate_bases: Vec<u8> = seen
+                    .into_iter()
                     .filter(|&nuc| nuc != reference_base)
                     .collect();
+                alternate_bases.sort();
 
                 Some(VariablePositionInfo {
                     position: pos,
@@ -245,6 +241,9 @@ fn identify_variable_positions(
         })
         .collect();
 
+    // Sort by position for deterministic output (FIX #1: par_iter may reorder)
+    variable_positions_info.sort_by_key(|info| info.position);
+
     pb.finish_with_message("Position processing completed.");
 
     println!(
@@ -253,31 +252,24 @@ fn identify_variable_positions(
     );
     println!("Total sequences processed: {}", total_sequences);
 
-    Ok((variable_positions_info, total_sequences, sample_names))
+    variable_positions_info
 }
 
 /// Step 2: Extract variable positions and write to the output FASTA file
+/// FIX #1: Write sequentially from in-memory sequences to guarantee deterministic order
 fn extract_and_write_variables(
-    input_filename: &str,
+    sequences: &[Vec<u8>],
+    sample_names: &[String],
     output_filename: &str,
     variable_positions_info: &[VariablePositionInfo],
-    total_sequences: usize,
     system: &Arc<Mutex<System>>,
 ) -> io::Result<()> {
-    // Open the input FASTA file again for the second step
-    let input_file = File::open(input_filename)?;
-    let reader = BufReader::with_capacity(16 * 1024 * 1024, input_file);
-    let fasta_reader = fasta::Reader::new(reader);
-
-    // Open the output FASTA file for writing
     let output_file = File::create(output_filename)?;
-    let writer = BufWriter::with_capacity(16 * 1024 * 1024, output_file);
-    let writer = Arc::new(Mutex::new(writer));
+    let mut writer = BufWriter::with_capacity(16 * 1024 * 1024, output_file);
 
-    // Get the variable positions
     let variable_positions: Vec<usize> = variable_positions_info.iter().map(|info| info.position).collect();
+    let total_sequences = sequences.len();
 
-    // Initialize a progress spinner for Step 2
     let pb_write = ProgressBar::new_spinner();
     pb_write.set_style(
         ProgressStyle::default_spinner()
@@ -285,56 +277,40 @@ fn extract_and_write_variables(
             .unwrap(),
     );
     pb_write.enable_steady_tick(Duration::from_millis(100));
+    pb_write.set_length(total_sequences as u64);
 
-    // Atomic counter for written sequences
-    let seq_counter = AtomicUsize::new(0);
+    for (i, (seq, name)) in sequences.iter().zip(sample_names.iter()).enumerate() {
+        // Extract variable nucleotides
+        let var_seq: Vec<u8> = variable_positions.iter().map(|&pos| seq[pos]).collect();
+        let var_seq_str = String::from_utf8_lossy(&var_seq);
 
-    // Process and write sequences in parallel
-    fasta_reader
-        .records()
-        .par_bridge()
-        .try_for_each(|result| -> io::Result<()> {
-            let record = result?;
-            let seq = record.seq();
+        writeln!(writer, ">{}", name)?;
+        writeln!(writer, "{}", var_seq_str)?;
 
-            // Extract variable nucleotides based on variable_positions
-            let var_seq: Vec<u8> = variable_positions.iter().map(|&pos| seq[pos]).collect();
-
-            // Convert to String
-            let var_seq_str = String::from_utf8_lossy(&var_seq).to_string();
-
-            // Safely write to the output file
-            {
-                let mut writer = writer.lock().unwrap();
-                writeln!(writer, ">{}", record.id())?;
-                writeln!(writer, "{}", var_seq_str)?;
-            }
-
-            // Update the progress spinner
-            let current = seq_counter.fetch_add(1, Ordering::SeqCst) + 1;
+        let current = i + 1;
+        if current % 10_000 == 0 || current == total_sequences {
             pb_write.set_position(current as u64);
-            pb_write.set_length(total_sequences as u64);
+        }
 
-            // Report RAM usage every 100,000 sequences
-            if current % 100_000 == 0 {
-                if let Ok(mut sys) = system.lock() {
-                    sys.refresh_memory();
-                    let total_memory = sys.total_memory();
-                    let used_memory = sys.used_memory();
-                    println!(
-                        "[{}] Written {} sequences. RAM usage: {} KB used / {} KB total.",
-                        Local::now().format("%Y-%m-%d %H:%M:%S"),
-                        current,
-                        used_memory,
-                        total_memory
-                    );
-                }
+        // Report RAM usage every 100,000 sequences
+        if current % 100_000 == 0 {
+            if let Ok(mut sys) = system.lock() {
+                sys.refresh_memory();
+                let total_memory = sys.total_memory();
+                let used_memory = sys.used_memory();
+                println!(
+                    "[{}] Written {} sequences. RAM usage: {} KB used / {} KB total.",
+                    Local::now().format("%Y-%m-%d %H:%M:%S"),
+                    current,
+                    used_memory,
+                    total_memory
+                );
             }
+        }
+    }
 
-            Ok(())
-        })?;
+    writer.flush()?;
 
-    // Finish the progress spinner for Step 2
     pb_write.finish_with_message(format!(
         "Completed: {} sequences written.",
         total_sequences
@@ -349,31 +325,32 @@ fn extract_and_write_variables(
     Ok(())
 }
 
-/// Step 3: Generate the VCF file with actual bases, including ambiguous bases and codons
+/// Step 3: Generate a VCF 4.2 file with standard GT genotypes
+/// FIX #3: ALT alleles separated by commas (VCF standard)
+/// FIX #4: Standard GT format with allele indices instead of custom BASE format
 fn generate_vcf_file(
     variable_positions_info: &[VariablePositionInfo],
     vcf_output_filename: &str,
     sample_names: &[String],
+    seq_length: usize,
 ) -> io::Result<()> {
-    // Open the output VCF file for writing
     let output_file = File::create(vcf_output_filename)?;
     let mut writer = BufWriter::new(output_file);
 
-    // Write the VCF header
+    // VCF header
     writeln!(writer, "##fileformat=VCFv4.2")?;
     writeln!(writer, "##source=snpick")?;
-    writeln!(writer, "##reference=.")?;
-    writeln!(writer, "##contig=<ID=1,length={}>", variable_positions_info.len())?;
+    writeln!(writer, "##reference=first_sequence")?;
+    writeln!(writer, "##contig=<ID=1,length={}>", seq_length)?;
     writeln!(
         writer,
         "##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of Samples With Data\">"
     )?;
     writeln!(
         writer,
-        "##FORMAT=<ID=BASE,Number=1,Type=String,Description=\"Observed base at this position\">"
+        "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">"
     )?;
 
-    // Write the header line with sample names
     write!(writer, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")?;
     for sample_name in sample_names {
         write!(writer, "\t{}", sample_name)?;
@@ -382,33 +359,50 @@ fn generate_vcf_file(
 
     // Generate VCF entries
     for info in variable_positions_info {
-        let chrom = "1"; // Change this if you have chromosome information
-        let pos = info.position + 1; // Positions in VCF are 1-based
+        let chrom = "1";
+        let pos = info.position + 1; // VCF is 1-based
         let id = ".";
         let ref_base = info.reference_base as char;
-        let mut alt_bases: Vec<char> = info.alternate_bases.iter().map(|&b| b as char).collect();
-        alt_bases.sort();
-        let alt = alt_bases.iter().collect::<String>().replace('-', ".");
+
+        // ALT alleles separated by commas; gaps represented as * (VCF 4.2 standard)
+        let alt_strings: Vec<String> = info
+            .alternate_bases
+            .iter()
+            .map(|&b| {
+                let c = b as char;
+                if c == '-' { "*".to_string() } else { c.to_string() }
+            })
+            .collect();
+        let alt = alt_strings.join(",");
+
         let qual = ".";
         let filter = "PASS";
         let info_field = format!("NS={}", sample_names.len());
-        let format_field = "BASE"; // Using a custom field
 
-        // Generate genotypes for each sample, using the actual bases
+        // Build allele index map: REF=0, ALT1=1, ALT2=2, ...
+        let mut allele_index: HashMap<u8, usize> = HashMap::new();
+        allele_index.insert(info.reference_base, 0);
+        for (i, &alt_base) in info.alternate_bases.iter().enumerate() {
+            allele_index.insert(alt_base, i + 1);
+        }
+
+        // Standard GT genotypes (index-based)
         let genotypes: Vec<String> = info
             .genotypes
             .iter()
             .map(|&genotype_base| {
-                let base_char = genotype_base as char;
-                base_char.to_string()
+                let upper = genotype_base.to_ascii_uppercase();
+                match allele_index.get(&upper) {
+                    Some(idx) => idx.to_string(),
+                    None => ".".to_string(), // Missing or ambiguous base
+                }
             })
             .collect();
 
-        // Write the VCF line
         write!(
             writer,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            chrom, pos, id, ref_base, alt, qual, filter, info_field, format_field
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tGT",
+            chrom, pos, id, ref_base, alt, qual, filter, info_field
         )?;
         for gt in genotypes {
             write!(writer, "\t{}", gt)?;
@@ -416,7 +410,6 @@ fn generate_vcf_file(
         writeln!(writer)?;
     }
 
-    // Ensure all data is written correctly
     writer.flush()?;
 
     Ok(())
