@@ -1,8 +1,7 @@
-use bio::io::fasta::{self, FastaRead};
 use clap::Parser;
 use memmap2::Mmap;
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -64,18 +63,22 @@ fn bits_to_bases(bits: u8, include_gaps: bool) -> Vec<u8> {
     v
 }
 
-fn check_paths_differ(input: &str, output: &str) -> io::Result<()> {
-    let inp = std::fs::canonicalize(input)?;
-    let out_path = Path::new(output);
-    let out_abs = if out_path.exists() { std::fs::canonicalize(output)? }
-    else {
-        let parent = out_path.parent().unwrap_or(Path::new("."));
-        std::fs::canonicalize(parent).unwrap_or(parent.to_path_buf())
-            .join(out_path.file_name().unwrap_or_default())
-    };
-    if inp == out_abs {
+fn resolve_path(p: &str) -> io::Result<std::path::PathBuf> {
+    let path = Path::new(p);
+    if path.exists() {
+        return std::fs::canonicalize(path);
+    }
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let parent_abs = std::fs::canonicalize(parent).unwrap_or(parent.to_path_buf());
+    Ok(parent_abs.join(path.file_name().unwrap_or_default()))
+}
+
+fn check_paths_differ(a: &str, b: &str) -> io::Result<()> {
+    let pa = resolve_path(a)?;
+    let pb = resolve_path(b)?;
+    if pa == pb {
         return Err(io::Error::new(io::ErrorKind::InvalidInput,
-            format!("Input and output resolve to same file: {}", inp.display())));
+            format!("Paths resolve to same file: {}", pa.display())));
     }
     Ok(())
 }
@@ -98,86 +101,159 @@ impl ConstantSiteCounts {
     fn fconst(&self) -> String { format!("{},{},{},{}", self.a, self.c, self.g, self.t) }
 }
 
-struct ScanResult {
-    bitmask: Vec<u8>,
-    ref_seq: Vec<u8>,
-    names: Vec<String>,
-    descs: Vec<String>,
-    seq_length: usize,
+// =============================================================================
+// FASTA record: zero-copy view into mmap
+// =============================================================================
+
+struct FastaRecord<'a> {
+    id: &'a [u8],
+    desc: &'a [u8],
+    seq_offset: usize, // byte offset in mmap where sequence starts
 }
 
-// =============================================================================
-// Pass 1: streaming bitmask — O(L) memory, bio reader (fastest for sequential)
-// =============================================================================
-
-fn pass1_scan(path: &str, lookup: &[u8; 256]) -> io::Result<ScanResult> {
-    let file = File::open(path)?;
-    let reader = BufReader::with_capacity(IO_BUF, file);
-    let mut fasta = fasta::Reader::new(reader);
-    let mut record = fasta::Record::new();
-
-    let mut bitmask: Vec<u8> = Vec::new();
-    let mut ref_seq: Vec<u8> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
-    let mut descs: Vec<String> = Vec::new();
+/// Index FASTA records from mmap. Zero-copy: stores &[u8] slices.
+/// Returns (records, seq_length, is_single_line).
+/// is_single_line = true when all sequences are on one line (no embedded newlines).
+fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, bool)> {
+    let mut records = Vec::new();
+    let mut pos = 0;
+    let len = data.len();
     let mut seq_length = 0usize;
-    let mut count = 0usize;
+    let mut single_line = true;
 
-    loop {
-        fasta.read(&mut record)?;
-        if record.is_empty() { break; }
-        let seq = record.seq();
+    while pos < len {
+        // Skip whitespace before '>'
+        while pos < len && (data[pos] == b'\n' || data[pos] == b'\r') { pos += 1; }
+        if pos >= len { break; }
 
-        if count == 0 {
-            seq_length = seq.len();
-            if seq_length == 0 {
+        if data[pos] != b'>' {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Expected '>' at byte {}, got '{}'.", pos, data[pos] as char)));
+        }
+        pos += 1;
+
+        // Parse header line
+        let header_start = pos;
+        while pos < len && data[pos] != b'\n' && data[pos] != b'\r' { pos += 1; }
+        let header = &data[header_start..pos];
+        // Skip newline(s)
+        if pos < len && data[pos] == b'\r' { pos += 1; }
+        if pos < len && data[pos] == b'\n' { pos += 1; }
+
+        // Split id and desc
+        let (id, desc) = if let Some(sp) = header.iter().position(|&b| b == b' ' || b == b'\t') {
+            (&header[..sp], &header[sp + 1..])
+        } else {
+            (header, &data[0..0]) // empty slice
+        };
+
+        let seq_offset = pos;
+
+        // Scan sequence: count bases, track newlines
+        let mut seq_len = 0usize;
+        let mut has_inner_newline = false;
+        while pos < len && data[pos] != b'>' {
+            let line_start = pos;
+            while pos < len && data[pos] != b'\n' && data[pos] != b'\r' { pos += 1; }
+            seq_len += pos - line_start;
+            // Skip newline(s)
+            if pos < len && data[pos] == b'\r' { pos += 1; }
+            if pos < len && data[pos] == b'\n' { pos += 1; }
+            // If there's more sequence data after this newline, it's multi-line
+            if pos < len && data[pos] != b'>' && seq_len > 0 {
+                // Check if next char is sequence data (not '>' or EOF)
+                if data[pos] != b'\n' && data[pos] != b'\r' {
+                    has_inner_newline = true;
+                }
+            }
+        }
+
+        if records.is_empty() {
+            if seq_len == 0 {
                 return Err(io::Error::new(io::ErrorKind::InvalidData, "First sequence has length 0."));
             }
-            if seq_length > MAX_SEQ_LENGTH {
+            if seq_len > MAX_SEQ_LENGTH {
                 return Err(io::Error::new(io::ErrorKind::InvalidData,
-                    format!("Sequence length {} exceeds maximum.", seq_length)));
+                    format!("Sequence length {} exceeds maximum.", seq_len)));
             }
-            bitmask = vec![0u8; seq_length];
-            ref_seq = seq.to_vec();
-        } else if seq.len() != seq_length {
+            seq_length = seq_len;
+        } else if seq_len != seq_length {
+            let id_str = std::str::from_utf8(id).unwrap_or("?");
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 format!("Sequence '{}' (#{}) has length {} but expected {}.",
-                    record.id(), count + 1, seq.len(), seq_length)));
+                    id_str, records.len() + 1, seq_len, seq_length)));
         }
 
-        names.push(record.id().to_string());
-        descs.push(record.desc().unwrap_or("").to_string());
-
-        // Hot loop: OR bitmask via lookup table — process in 8-byte chunks for ILP
-        let bm = &mut bitmask;
-        let s = seq;
-        let chunks = seq_length / 8;
-        let remainder = seq_length % 8;
-        for c in 0..chunks {
-            let base = c * 8;
-            bm[base]     |= lookup[s[base]     as usize];
-            bm[base + 1] |= lookup[s[base + 1] as usize];
-            bm[base + 2] |= lookup[s[base + 2] as usize];
-            bm[base + 3] |= lookup[s[base + 3] as usize];
-            bm[base + 4] |= lookup[s[base + 4] as usize];
-            bm[base + 5] |= lookup[s[base + 5] as usize];
-            bm[base + 6] |= lookup[s[base + 6] as usize];
-            bm[base + 7] |= lookup[s[base + 7] as usize];
-        }
-        let base = chunks * 8;
-        for i in 0..remainder {
-            bm[base + i] |= lookup[s[base + i] as usize];
-        }
-
-        count += 1;
+        if has_inner_newline { single_line = false; }
+        records.push(FastaRecord { id, desc, seq_offset });
     }
 
-    if count == 0 {
+    if records.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Input FASTA is empty."));
     }
 
-    eprintln!("[snpick] Pass 1: {} sequences × {} positions.", count, seq_length);
-    Ok(ScanResult { bitmask, ref_seq, names, descs, seq_length })
+    Ok((records, seq_length, single_line))
+}
+
+// =============================================================================
+// Pass 1: bitmask scan — zero-copy over mmap, no allocations
+// =============================================================================
+
+fn pass1_scan(data: &[u8], records: &[FastaRecord], seq_length: usize,
+              single_line: bool, lookup: &[u8; 256]) -> Vec<u8> {
+    let mut bitmask = vec![0u8; seq_length];
+
+    if single_line {
+        // Fast path: process in L1-friendly chunks across all sequences.
+        // For each chunk of positions, iterate all sequences — this keeps
+        // the bitmask chunk hot in L1 cache instead of thrashing it.
+        const CHUNK: usize = 32 * 1024; // 32 KB — fits in L1 data cache
+        let mut chunk_start = 0;
+        while chunk_start < seq_length {
+            let chunk_end = (chunk_start + CHUNK).min(seq_length);
+            let bm_chunk = &mut bitmask[chunk_start..chunk_end];
+            for rec in records {
+                let seq_chunk = &data[rec.seq_offset + chunk_start..rec.seq_offset + chunk_end];
+                for (bm_byte, &seq_byte) in bm_chunk.iter_mut().zip(seq_chunk.iter()) {
+                    *bm_byte |= lookup[seq_byte as usize];
+                }
+            }
+            chunk_start = chunk_end;
+        }
+    } else {
+        // Slow path: skip newlines for multi-line FASTA
+        for rec in records {
+            let mut pos = rec.seq_offset;
+            let end = data.len();
+            let mut i = 0;
+            while i < seq_length && pos < end {
+                let b = data[pos];
+                pos += 1;
+                if b == b'\n' || b == b'\r' { continue; }
+                bitmask[i] |= lookup[b as usize];
+                i += 1;
+            }
+        }
+    }
+
+    bitmask
+}
+
+/// Extract ref_seq from first record (zero-copy for single-line)
+fn get_ref_seq(data: &[u8], rec: &FastaRecord, seq_length: usize, single_line: bool) -> Vec<u8> {
+    if single_line {
+        data[rec.seq_offset..rec.seq_offset + seq_length].to_vec()
+    } else {
+        let mut seq = Vec::with_capacity(seq_length);
+        let mut pos = rec.seq_offset;
+        let end = data.len();
+        while seq.len() < seq_length && pos < end {
+            let b = data[pos];
+            pos += 1;
+            if b != b'\n' && b != b'\r' { seq.push(b); }
+        }
+        seq
+    }
 }
 
 fn analyze(bitmask: &[u8], ref_seq: &[u8], lookup: &[u8; 256], include_gaps: bool)
@@ -207,58 +283,11 @@ fn analyze(bitmask: &[u8], ref_seq: &[u8], lookup: &[u8; 256], include_gaps: boo
 }
 
 // =============================================================================
-// Pass 2: mmap + direct index for variable sites extraction
+// Pass 2: extract variable sites — zero-copy direct index
 // =============================================================================
 
-/// Index sequence start offsets in the mmap for pass 2 direct access.
-/// Returns vec of (seq_data_offset, is_single_line) per sequence.
-fn index_seq_offsets(data: &[u8], num_seqs: usize, seq_length: usize, names: &[String])
--> io::Result<Vec<usize>> {
-    let mut offsets = Vec::with_capacity(num_seqs);
-    let mut pos = 0;
-    let len = data.len();
-
-    for (si, expected_name) in names.iter().enumerate() {
-        // Find '>'
-        while pos < len && data[pos] != b'>' { pos += 1; }
-        if pos >= len {
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                format!("Pass 2: expected {} sequences, found only {}.", num_seqs, si)));
-        }
-        pos += 1; // skip '>'
-
-        // Verify name matches
-        let name = expected_name.as_bytes();
-        let header_start = pos;
-        while pos < len && data[pos] != b'\n' && data[pos] != b'\r'
-            && data[pos] != b' ' && data[pos] != b'\t' { pos += 1; }
-        let found_id = &data[header_start..pos];
-        if found_id != name {
-            let found = std::str::from_utf8(found_id).unwrap_or("?");
-            return Err(io::Error::new(io::ErrorKind::InvalidData,
-                format!("Pass 2: sequence #{} is '{}' but pass 1 had '{}'. File modified?",
-                    si + 1, found, expected_name)));
-        }
-
-        // Skip to end of header line
-        while pos < len && data[pos] != b'\n' { pos += 1; }
-        if pos < len { pos += 1; } // skip \n
-
-        // This is where sequence data starts
-        offsets.push(pos);
-
-        // Skip past sequence data
-        pos += seq_length; // for single-line, this is exact
-        // Handle potential newlines in multi-line FASTA
-        while pos < len && data[pos] != b'>' { pos += 1; }
-    }
-
-    Ok(offsets)
-}
-
 struct ExtractParams<'a> {
-    names: &'a [String],
-    descs: &'a [String],
+    records: &'a [FastaRecord<'a>],
     output: &'a str,
     collect_vcf: bool,
     lookup: &'a [u8; 256],
@@ -266,13 +295,12 @@ struct ExtractParams<'a> {
 }
 
 fn pass2_extract(
-    data: &[u8], offsets: &[usize], var_positions: &mut [VariablePosition],
-    params: &ExtractParams<'_>,
+    data: &[u8], var_positions: &mut [VariablePosition], params: &ExtractParams<'_>,
 ) -> io::Result<Option<Vec<u8>>> {
-    let ExtractParams { names, descs, output, collect_vcf, lookup, upper } = params;
+    let ExtractParams { records, output, collect_vcf, lookup, upper } = params;
     let collect_vcf = *collect_vcf;
     let num_var = var_positions.len();
-    let num_samples = names.len();
+    let num_samples = records.len();
     let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
 
     let out_file = File::create(output).map_err(|e| io::Error::new(e.kind(),
@@ -283,18 +311,20 @@ fn pass2_extract(
     let mut ns_counts: Vec<usize> = if collect_vcf { vec![0usize; num_var] } else { Vec::new() };
     let mut var_buf = vec![0u8; num_var];
 
-    for (si, &base) in offsets.iter().enumerate() {
-        // Direct byte access — O(V) random reads from mmap, OS handles page cache
+    for (si, rec) in records.iter().enumerate() {
+        let base = rec.seq_offset;
+
+        // Direct byte access — single-line FASTA: data[base + p] is exact
         for (vi, &p) in pos_indices.iter().enumerate() {
             var_buf[vi] = upper[data[base + p] as usize];
         }
 
         // Write output
         writer.write_all(b">")?;
-        writer.write_all(names[si].as_bytes())?;
-        if !descs[si].is_empty() {
+        writer.write_all(rec.id)?;
+        if !rec.desc.is_empty() {
             writer.write_all(b" ")?;
-            writer.write_all(descs[si].as_bytes())?;
+            writer.write_all(rec.desc)?;
         }
         writer.write_all(b"\n")?;
         writer.write_all(&var_buf)?;
@@ -328,7 +358,7 @@ fn pass2_extract(
 
 fn write_vcf(
     vcf_geno: &[u8], num_samples: usize, var_positions: &[VariablePosition],
-    vcf_path: &str, names: &[String], seq_length: usize,
+    vcf_path: &str, records: &[FastaRecord], seq_length: usize,
 ) -> io::Result<()> {
     let out = File::create(vcf_path).map_err(|e| io::Error::new(e.kind(),
         format!("Cannot create VCF '{}': {}", vcf_path, e)))?;
@@ -340,7 +370,10 @@ fn write_vcf(
     writeln!(w, "##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of Samples With Data\">")?;
     writeln!(w, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">")?;
     write!(w, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")?;
-    for n in names { write!(w, "\t{}", n)?; }
+    for rec in records {
+        write!(w, "\t")?;
+        w.write_all(rec.id)?;
+    }
     writeln!(w)?;
 
     let mut lut = [255u8; 256];
@@ -390,15 +423,31 @@ fn run() -> io::Result<()> {
         Some(vp)
     } else { None };
 
-    // Pass 1: streaming bitmask via bio (optimal for sequential scan)
-    let scan = pass1_scan(&args.fasta, &lookup)?;
-    let t1 = start.elapsed().as_secs_f64();
-    let (mut var_positions, site_counts) = analyze(&scan.bitmask, &scan.ref_seq, &lookup, args.include_gaps);
-    let num_var = var_positions.len();
-    let num_samples = scan.names.len();
-    let seq_length = scan.seq_length;
+    // Memory-map input file (single mapping for both passes)
+    let file = File::open(&args.fasta).map_err(|e| io::Error::new(e.kind(),
+        format!("Cannot open '{}': {}", args.fasta, e)))?;
+    let mmap = unsafe { Mmap::map(&file)? };
+    let data = &mmap[..];
 
-    let ScanResult { names, descs, .. } = scan;
+    // Index all records (zero-copy slices into mmap)
+    let (records, seq_length, single_line) = index_fasta(data)?;
+    let num_samples = records.len();
+
+    eprintln!("[snpick] Mapped {} bytes. {} sequences × {} positions.{}",
+        data.len(), num_samples, seq_length,
+        if single_line { "" } else { " (multi-line FASTA)" });
+
+    // Pass 1: bitmask scan (zero-copy, direct over mmap)
+    let bitmask = pass1_scan(data, &records, seq_length, single_line, &lookup);
+    let ref_seq = get_ref_seq(data, &records[0], seq_length, single_line);
+    let t1 = start.elapsed().as_secs_f64();
+
+    let (mut var_positions, site_counts) = analyze(&bitmask, &ref_seq, &lookup, args.include_gaps);
+    let num_var = var_positions.len();
+
+    // Free bitmask + ref_seq
+    drop(bitmask);
+    drop(ref_seq);
 
     eprintln!("[snpick] {} variable, {} constant ({}), {} ambiguous-only, {} total.",
         site_counts.variable, site_counts.constant.total(), site_counts.constant,
@@ -410,9 +459,10 @@ fn run() -> io::Result<()> {
         eprintln!("[snpick] No variable positions — writing empty output.");
         let out = File::create(&args.output)?;
         let mut w = BufWriter::new(out);
-        for (i, name) in names.iter().enumerate() {
-            write!(w, ">{}", name)?;
-            if !descs[i].is_empty() { write!(w, " {}", descs[i])?; }
+        for rec in &records {
+            w.write_all(b">")?;
+            w.write_all(rec.id)?;
+            if !rec.desc.is_empty() { w.write_all(b" ")?; w.write_all(rec.desc)?; }
             writeln!(w)?; writeln!(w)?;
         }
         w.flush()?;
@@ -429,18 +479,15 @@ fn run() -> io::Result<()> {
         }
     }
 
-    // Pass 2: mmap for O(V) random access per sequence (no full re-read)
-    let file = File::open(&args.fasta)?;
-    let mmap = unsafe { Mmap::map(&file)? };
-    let data = &mmap[..];
-
-    let offsets = index_seq_offsets(data, num_samples, seq_length, &names)?;
-    let ep = ExtractParams { names: &names, descs: &descs, output: &args.output,
-        collect_vcf: do_vcf, lookup: &lookup, upper: &upper };
-    let vcf_geno = pass2_extract(data, &offsets, &mut var_positions, &ep)?;
+    // Pass 2: extract variable sites (same mmap, direct byte access)
+    let ep = ExtractParams {
+        records: &records, output: &args.output,
+        collect_vcf: do_vcf, lookup: &lookup, upper: &upper,
+    };
+    let vcf_geno = pass2_extract(data, &mut var_positions, &ep)?;
 
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
-        write_vcf(geno, num_samples, &var_positions, vp, &names, seq_length)?;
+        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length)?;
         eprintln!("[snpick] VCF written to {}.", vp);
     }
 
@@ -466,48 +513,63 @@ mod tests {
         let p = format!("/tmp/snpick_t_{}.fa", name);
         std::fs::write(&p, c).unwrap(); p
     }
+    fn setup(path: &str) -> Mmap {
+        let f = File::open(path).unwrap();
+        unsafe { Mmap::map(&f).unwrap() }
+    }
 
     #[test] fn test_lookup() {
         let lk = build_lookup(false);
         assert_eq!(lk[b'A' as usize], BIT_A); assert_eq!(lk[b'N' as usize], 0);
         assert_eq!(build_lookup(true)[b'-' as usize], BIT_GAP);
     }
+    #[test] fn test_index() {
+        let p = tmp("idx2", ">s1\nATGC\n>s2\nATCC\n");
+        let m = setup(&p);
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        assert_eq!(recs.len(), 2); assert_eq!(sl, 4); assert!(single);
+        assert_eq!(recs[0].id, b"s1"); assert_eq!(recs[1].id, b"s2");
+        std::fs::remove_file(&p).ok();
+    }
     #[test] fn test_pass1() {
-        let p = tmp("p1d", ">s1\nATGC\n>s2\nATCC\n");
+        let p = tmp("p1e", ">s1\nATGC\n>s2\nATCC\n");
+        let m = setup(&p);
         let lk = build_lookup(false);
-        let r = pass1_scan(&p, &lk).unwrap();
-        assert_eq!(r.names.len(), 2); assert_eq!(r.seq_length, 4);
-        assert_eq!(r.bitmask[2], BIT_G | BIT_C);
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, single, &lk);
+        assert_eq!(bm[2], BIT_G | BIT_C);
         std::fs::remove_file(&p).ok();
     }
     #[test] fn test_e2e() {
-        let p = tmp("e2ed", ">ref\nATGCATGC\n>s1\nATGTATGC\n>s2\nACGCATGC\n");
-        let o = "/tmp/snpick_t_e2ed_out.fa";
+        let p = tmp("e2ee", ">ref\nATGCATGC\n>s1\nATGTATGC\n>s2\nACGCATGC\n");
+        let o = "/tmp/snpick_t_e2ee_out.fa";
+        let m = setup(&p);
         let lk = build_lookup(false);
         let up = build_upper();
-        let r = pass1_scan(&p, &lk).unwrap();
-        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        let f = File::open(&p).unwrap();
-        let m = unsafe { Mmap::map(&f).unwrap() };
-        let offsets = index_seq_offsets(&m, r.names.len(), r.seq_length, &r.names).unwrap();
-        pass2_extract(&m, &offsets, &mut v, &ExtractParams { names: &r.names, descs: &r.descs, output: o, collect_vcf: false, lookup: &lk, upper: &up }).unwrap();
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, single, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, single);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up };
+        pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
         assert_eq!(l[1], "TC"); assert_eq!(l[3], "TT"); assert_eq!(l[5], "CC");
         std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
     #[test] fn test_vcf() {
-        let p = tmp("vcfd", ">ref\nATGC\n>s1\nCTGC\n>s2\nGTGC\n>s3\nTTGC\n");
-        let fo = "/tmp/snpick_t_vcfd_out.fa"; let vo = "/tmp/snpick_t_vcfd.vcf";
+        let p = tmp("vcfe", ">ref\nATGC\n>s1\nCTGC\n>s2\nGTGC\n>s3\nTTGC\n");
+        let fo = "/tmp/snpick_t_vcfe_out.fa"; let vo = "/tmp/snpick_t_vcfe.vcf";
+        let m = setup(&p);
         let lk = build_lookup(false);
         let up = build_upper();
-        let r = pass1_scan(&p, &lk).unwrap();
-        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        let f = File::open(&p).unwrap();
-        let m = unsafe { Mmap::map(&f).unwrap() };
-        let offsets = index_seq_offsets(&m, r.names.len(), r.seq_length, &r.names).unwrap();
-        let g = pass2_extract(&m, &offsets, &mut v, &ExtractParams { names: &r.names, descs: &r.descs, output: fo, collect_vcf: true, lookup: &lk, upper: &up }).unwrap().unwrap();
-        write_vcf(&g, r.names.len(), &v, vo, &r.names, r.seq_length).unwrap();
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, single, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, single);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up };
+        let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -516,85 +578,80 @@ mod tests {
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
     }
     #[test] fn test_ambig() {
-        let p = tmp("ambd", ">ref\nATGC\n>s1\nCTGC\n>s2\nNTGC\n");
-        let fo = "/tmp/snpick_t_ambd_out.fa"; let vo = "/tmp/snpick_t_ambd.vcf";
+        let p = tmp("ambe", ">ref\nATGC\n>s1\nCTGC\n>s2\nNTGC\n");
+        let fo = "/tmp/snpick_t_ambe_out.fa"; let vo = "/tmp/snpick_t_ambe.vcf";
+        let m = setup(&p);
         let lk = build_lookup(false);
         let up = build_upper();
-        let r = pass1_scan(&p, &lk).unwrap();
-        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        let f = File::open(&p).unwrap();
-        let m = unsafe { Mmap::map(&f).unwrap() };
-        let offsets = index_seq_offsets(&m, r.names.len(), r.seq_length, &r.names).unwrap();
-        let g = pass2_extract(&m, &offsets, &mut v, &ExtractParams { names: &r.names, descs: &r.descs, output: fo, collect_vcf: true, lookup: &lk, upper: &up }).unwrap().unwrap();
-        write_vcf(&g, r.names.len(), &v, vo, &r.names, r.seq_length).unwrap();
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, single, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, single);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up };
+        let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
-        let dl: Vec<&str> = c.lines().filter(|l|!l.starts_with('#')).collect();
+        let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
         assert_eq!(f[7], "NS=2"); assert_eq!(f[11], ".");
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
     }
     #[test] fn test_desc_preserved() {
-        let p = tmp("descd", ">s1 some description\nATGC\n>s2 another desc\nATCC\n");
-        let o = "/tmp/snpick_t_descd_out.fa";
+        let p = tmp("desce", ">s1 some description\nATGC\n>s2 another desc\nATCC\n");
+        let o = "/tmp/snpick_t_desce_out.fa";
+        let m = setup(&p);
         let lk = build_lookup(false);
         let up = build_upper();
-        let r = pass1_scan(&p, &lk).unwrap();
-        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        let f = File::open(&p).unwrap();
-        let m = unsafe { Mmap::map(&f).unwrap() };
-        let offsets = index_seq_offsets(&m, r.names.len(), r.seq_length, &r.names).unwrap();
-        pass2_extract(&m, &offsets, &mut v, &ExtractParams { names: &r.names, descs: &r.descs, output: o, collect_vcf: false, lookup: &lk, upper: &up }).unwrap();
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, single, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, single);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up };
+        pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         assert!(c.contains(">s1 some description"));
         assert!(c.contains(">s2 another desc"));
         std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
     #[test] fn test_gaps() {
-        let p = tmp("gapd", ">ref\nATGC\n>s1\nA-GC\n");
+        let p = tmp("gape", ">ref\nATGC\n>s1\nA-GC\n");
+        let m = setup(&p);
         let lk_no = build_lookup(false); let lk_yes = build_lookup(true);
-        let r1 = pass1_scan(&p, &lk_no).unwrap();
-        let (v1, _) = analyze(&r1.bitmask, &r1.ref_seq, &lk_no, false);
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        let bm1 = pass1_scan(&m, &recs, sl, single, &lk_no);
+        let rs1 = get_ref_seq(&m, &recs[0], sl, single);
+        let (v1, _) = analyze(&bm1, &rs1, &lk_no, false);
         assert!(v1.is_empty());
-        let r2 = pass1_scan(&p, &lk_yes).unwrap();
-        let (v2, _) = analyze(&r2.bitmask, &r2.ref_seq, &lk_yes, true);
+        let bm2 = pass1_scan(&m, &recs, sl, single, &lk_yes);
+        let (v2, _) = analyze(&bm2, &rs1, &lk_yes, true);
         assert_eq!(v2.len(), 1);
         std::fs::remove_file(&p).ok();
     }
     #[test] fn test_paths() {
-        let p = tmp("pdd", ">x\nA\n");
-        assert!(check_paths_differ(&p, "/tmp/snpick_t_pdd2.fa").is_ok());
+        let p = tmp("pde", ">x\nA\n");
+        assert!(check_paths_differ(&p, "/tmp/snpick_t_pde2.fa").is_ok());
         assert!(check_paths_differ(&p, &p).is_err());
         std::fs::remove_file(&p).ok();
     }
-    #[test] fn test_integrity() {
-        let p = tmp("intd", ">s1\nATGC\n>s2\nATCC\n");
+    #[test] fn test_multiline() {
+        let p = tmp("mle", ">s1\nAT\nGC\n>s2\nAT\nCC\n");
+        let m = setup(&p);
         let lk = build_lookup(false);
-        let r = pass1_scan(&p, &lk).unwrap();
-        let (mut v, _) = analyze(&r.bitmask, &r.ref_seq, &lk, false);
-        std::fs::write(&p, ">s1\nATGC\n").unwrap();
-        let f = File::open(&p).unwrap();
-        let m = unsafe { Mmap::map(&f).unwrap() };
-        let result = index_seq_offsets(&m, r.names.len(), r.seq_length, &r.names);
-        assert!(result.is_err());
-        std::fs::remove_file(&p).ok();
-    }
-    #[test] fn test_name_mismatch() {
-        let p = tmp("nmd", ">s1\nATGC\n>s2\nATCC\n");
-        let lk = build_lookup(false);
-        let r = pass1_scan(&p, &lk).unwrap();
-        std::fs::write(&p, ">s2\nATGC\n>s1\nATCC\n").unwrap();
-        let f = File::open(&p).unwrap();
-        let m = unsafe { Mmap::map(&f).unwrap() };
-        let result = index_seq_offsets(&m, r.names.len(), r.seq_length, &r.names);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("s2") && err.contains("s1"));
+        let up = build_upper();
+        let (recs, sl, single) = index_fasta(&m).unwrap();
+        assert_eq!(sl, 4);
+        assert!(!single);
+        let bm = pass1_scan(&m, &recs, sl, single, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, single);
+        let (v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].index, 2);
         std::fs::remove_file(&p).ok();
     }
     #[test] fn test_empty() {
-        let p = tmp("empd", "");
-        let lk = build_lookup(false);
-        assert!(pass1_scan(&p, &lk).is_err());
+        let p = tmp("empe", "");
+        let m = setup(&p);
+        assert!(index_fasta(&m).is_err());
         std::fs::remove_file(&p).ok();
     }
 }
