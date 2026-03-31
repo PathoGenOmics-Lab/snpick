@@ -8,6 +8,7 @@
 [![DOI](https://img.shields.io/badge/doi-10.5281%2Fzenodo.14191809-%23ff0077?style=flat-square)](https://doi.org/10.5281/zenodo.14191809)
 [![PGO](https://img.shields.io/badge/PathoGenOmics-lab-red?style=flat-square)](https://github.com/PathoGenOmics-Lab)
 [![Anaconda-Version Badge](https://anaconda.org/bioconda/snpick/badges/version.svg)](https://anaconda.org/bioconda/snpick)
+[![Anaconda-Downloads](https://img.shields.io/conda/dn/bioconda/snpick.svg?style=flat-square&label=downloads)](https://anaconda.org/bioconda/snpick)
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat-square)](http://bioconda.github.io/recipes/snpick/README.html)
 
 **Fast, memory-efficient extraction of variable sites from FASTA alignments.**
