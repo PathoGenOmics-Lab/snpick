@@ -1,3 +1,8 @@
+//! Pass 1: bitmask scan and site classification.
+//!
+//! Builds a per-position bitmask by OR-ing each sequence's nucleotide flags,
+//! then classifies positions as variable (>1 allele), constant, or ambiguous.
+
 use crate::fasta::FastaRecord;
 use crate::types::*;
 

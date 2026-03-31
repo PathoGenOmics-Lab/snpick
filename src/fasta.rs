@@ -1,8 +1,13 @@
+//! Zero-copy FASTA parser over memory-mapped data.
+//!
+//! Records are indexed by scanning for `>` headers and tracking sequence offsets.
+//! No data is copied — IDs and descriptions are `&[u8]` slices into the mmap.
+
 use std::io;
 
 use crate::types::{SeqLayout, MAX_SEQ_LENGTH};
 
-/// Zero-copy FASTA record: slices into the memory-mapped file.
+/// A FASTA record as zero-copy slices into memory-mapped data.
 pub struct FastaRecord<'a> {
     pub id: &'a [u8],
     pub desc: &'a [u8],

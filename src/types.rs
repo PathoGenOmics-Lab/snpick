@@ -1,3 +1,8 @@
+//! Shared types, constants, and lookup tables for snpick.
+//!
+//! This module defines the core data structures (variable positions, site counts)
+//! and the bitmask-based nucleotide classification used throughout the pipeline.
+
 /// Bitmask flags for nucleotide classification.
 pub const BIT_A: u8 = 0b00001;
 pub const BIT_C: u8 = 0b00010;

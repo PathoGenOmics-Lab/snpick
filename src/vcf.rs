@@ -1,3 +1,8 @@
+//! VCF output writer.
+//!
+//! Generates VCF v4.2 from the genotype matrix built during pass 2.
+//! Uses a per-position lookup table for O(1) allele → index mapping.
+
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 

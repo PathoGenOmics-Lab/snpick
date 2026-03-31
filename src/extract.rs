@@ -1,3 +1,8 @@
+//! Pass 2: variable site extraction and output FASTA generation.
+//!
+//! Reads only the variable positions from each sequence (sparse access)
+//! and writes a reduced FASTA. Optionally collects a genotype matrix for VCF.
+
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 

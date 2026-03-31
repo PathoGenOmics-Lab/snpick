@@ -98,6 +98,8 @@ fn run() -> io::Result<()> {
     }
     let mmap = unsafe { Mmap::map(&file).map_err(|e| io::Error::new(e.kind(),
         format!("Cannot memory-map '{}': {}", args.fasta, e)))? };
+    // Hint: pass 1 reads sequentially; OS can prefetch and release pages eagerly
+    mmap.advise(memmap2::Advice::Sequential).ok();
     let data = &mmap[..];
 
     // Index records
@@ -413,6 +415,67 @@ mod tests {
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         assert_eq!(v.len(), 1); assert_eq!(v[0].index, 6);
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        pass2_extract(&m, &mut v, &ep).unwrap();
+        let c = std::fs::read_to_string(o).unwrap();
+        let l: Vec<&str> = c.lines().collect();
+        assert_eq!(l[1], "G"); assert_eq!(l[3], "C");
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
+    }
+
+    #[test] fn test_crlf_multiline() {
+        // Windows line endings (\r\n) with multi-line wrapping
+        let p = tmp("crlfml", "");
+        std::fs::write(&p, b">s1\r\nAT\r\nGC\r\n>s2\r\nAT\r\nCC\r\n").unwrap();
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        assert_eq!(sl, 4);
+        assert!(!layout.single_line);
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].index, 2);
+        let o = "/tmp/snpick_t_crlfml_out.fa";
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        pass2_extract(&m, &mut v, &ep).unwrap();
+        let c = std::fs::read_to_string(o).unwrap();
+        let l: Vec<&str> = c.lines().collect();
+        assert_eq!(l[1], "G"); assert_eq!(l[3], "C");
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
+    }
+
+    #[test] fn test_single_sequence() {
+        // Single sequence should produce 0 variable sites
+        let p = tmp("sing", ">s1\nATGC\n");
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        assert_eq!(recs.len(), 1);
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v, sc) = analyze(&bm, &rs, &lk, false);
+        assert!(v.is_empty());
+        assert_eq!(sc.constant.total(), 4);
+        assert_eq!(sc.variable, 0);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_no_trailing_newline() {
+        let p = tmp("noeof", "");
+        std::fs::write(&p, b">s1\nATGC\n>s2\nATCC").unwrap();
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        assert_eq!(recs.len(), 2);
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        let o = "/tmp/snpick_t_noeof_out.fa";
         let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
