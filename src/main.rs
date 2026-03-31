@@ -107,31 +107,12 @@ impl ConstantSiteCounts {
 // FASTA layout info
 // =============================================================================
 
-/// How sequences are laid out in the file.
+/// Whether all sequences are single-line (no embedded newlines).
+/// When true, `data[seq_offset + pos]` gives the base at `pos` directly.
+/// When false, we must build a newline-skip map per record for pass 2.
 #[derive(Clone, Copy)]
-enum SeqLayout {
-    /// All sequences on one line — direct byte access: byte = seq_offset + position
-    SingleLine,
-    /// Multi-line with uniform line width — arithmetic access:
-    /// byte = seq_offset + position + (position / line_width) * newline_len
-    MultiLine { line_width: usize, newline_len: usize },
-}
-
-impl SeqLayout {
-    /// Convert base position to byte offset within a record's sequence data.
-    #[inline]
-    fn base_to_byte(self, seq_offset: usize, pos: usize) -> usize {
-        match self {
-            SeqLayout::SingleLine => seq_offset + pos,
-            SeqLayout::MultiLine { line_width, newline_len } => {
-                seq_offset + pos + (pos / line_width) * newline_len
-            }
-        }
-    }
-
-    fn is_single_line(self) -> bool {
-        matches!(self, SeqLayout::SingleLine)
-    }
+struct SeqLayout {
+    single_line: bool,
 }
 
 // =============================================================================
@@ -155,9 +136,7 @@ fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, SeqLayou
     let mut pos = 0;
     let len = data.len();
     let mut seq_length = 0usize;
-    let mut first_line_width: Option<usize> = None;
-    let mut newline_len = 1usize; // default to Unix
-    let mut is_multi_line = false;
+    let mut is_single_line = true;
 
     while pos < len {
         // Skip whitespace before '>'
@@ -174,7 +153,6 @@ fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, SeqLayou
         let header_start = pos;
         while pos < len && data[pos] != b'\n' && data[pos] != b'\r' { pos += 1; }
         let header = &data[header_start..pos];
-        // Skip newline(s)
         if pos < len && data[pos] == b'\r' { pos += 1; }
         if pos < len && data[pos] == b'\n' { pos += 1; }
 
@@ -187,33 +165,22 @@ fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, SeqLayou
 
         let seq_offset = pos;
 
-        // Scan sequence: count bases, detect line structure
+        // Scan sequence: count bases
         let mut seq_len = 0usize;
         let mut line_count = 0usize;
         while pos < len && data[pos] != b'>' {
             let line_start = pos;
             while pos < len && data[pos] != b'\n' && data[pos] != b'\r' { pos += 1; }
             let line_len = pos - line_start;
-
             if line_len > 0 {
-                // First sequence, first line: detect line width and newline style
-                if records.is_empty() && line_count == 0 && first_line_width.is_none() {
-                    first_line_width = Some(line_len);
-                    // Detect newline style
-                    if pos < len && data[pos] == b'\r' {
-                        newline_len = if pos + 1 < len && data[pos + 1] == b'\n' { 2 } else { 1 };
-                    }
-                }
                 seq_len += line_len;
                 line_count += 1;
             }
-
-            // Skip newline(s)
             if pos < len && data[pos] == b'\r' { pos += 1; }
             if pos < len && data[pos] == b'\n' { pos += 1; }
         }
 
-        if line_count > 1 { is_multi_line = true; }
+        if line_count > 1 { is_single_line = false; }
 
         if records.is_empty() {
             if seq_len == 0 {
@@ -238,14 +205,7 @@ fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, SeqLayou
         return Err(io::Error::new(io::ErrorKind::InvalidData, "Input FASTA is empty."));
     }
 
-    let layout = if is_multi_line {
-        let lw = first_line_width.unwrap_or(seq_length);
-        SeqLayout::MultiLine { line_width: lw, newline_len }
-    } else {
-        SeqLayout::SingleLine
-    };
-
-    Ok((records, seq_length, layout))
+    Ok((records, seq_length, SeqLayout { single_line: is_single_line }))
 }
 
 // =============================================================================
@@ -256,7 +216,7 @@ fn pass1_scan(data: &[u8], records: &[FastaRecord], seq_length: usize,
               layout: SeqLayout, lookup: &[u8; 256]) -> Vec<u8> {
     let mut bitmask = vec![0u8; seq_length];
 
-    if layout.is_single_line() {
+    if layout.single_line {
         // Fast path: L1-friendly chunks, direct slice access
         const CHUNK: usize = 32 * 1024;
         let mut chunk_start = 0;
@@ -292,7 +252,7 @@ fn pass1_scan(data: &[u8], records: &[FastaRecord], seq_length: usize,
 
 /// Extract ref_seq from first record
 fn get_ref_seq(data: &[u8], rec: &FastaRecord, seq_length: usize, layout: SeqLayout) -> Vec<u8> {
-    if layout.is_single_line() {
+    if layout.single_line {
         data[rec.seq_offset..rec.seq_offset + seq_length].to_vec()
     } else {
         let mut seq = Vec::with_capacity(seq_length);
@@ -365,10 +325,29 @@ fn pass2_extract(
     let mut var_buf = vec![0u8; num_var];
 
     for (si, rec) in records.iter().enumerate() {
-        // Layout-aware byte access for each variable position
-        for (vi, &p) in pos_indices.iter().enumerate() {
-            let byte_pos = layout.base_to_byte(rec.seq_offset, p);
-            var_buf[vi] = upper[data[byte_pos] as usize];
+        if layout.single_line {
+            // Fast path: direct byte access
+            let base = rec.seq_offset;
+            for (vi, &p) in pos_indices.iter().enumerate() {
+                var_buf[vi] = upper[data[base + p] as usize];
+            }
+        } else {
+            // Multi-line: scan to build position→byte mapping, then extract
+            // We only need the variable positions, so scan linearly and pick them
+            let mut pos = rec.seq_offset;
+            let end = data.len();
+            let mut base_idx = 0usize;
+            let mut var_idx = 0usize;
+            while var_idx < num_var && pos < end {
+                let b = data[pos];
+                pos += 1;
+                if b == b'\n' || b == b'\r' { continue; }
+                if base_idx == pos_indices[var_idx] {
+                    var_buf[var_idx] = upper[b as usize];
+                    var_idx += 1;
+                }
+                base_idx += 1;
+            }
         }
 
         // Write output
@@ -493,7 +472,7 @@ fn run() -> io::Result<()> {
 
     eprintln!("[snpick] Mapped {} bytes. {} sequences × {} positions.{}",
         data.len(), num_samples, seq_length,
-        if layout.is_single_line() { "" } else { " (multi-line FASTA)" });
+        if layout.single_line { "" } else { " (multi-line FASTA)" });
 
     // Pass 1: bitmask scan (zero-copy, direct over mmap)
     let bitmask = pass1_scan(data, &records, seq_length, layout, &lookup);
@@ -585,7 +564,7 @@ mod tests {
         let m = setup(&p);
         let (recs, sl, layout) = index_fasta(&m).unwrap();
         assert_eq!(recs.len(), 2); assert_eq!(sl, 4);
-        assert!(layout.is_single_line());
+        assert!(layout.single_line);
         assert_eq!(recs[0].id, b"s1"); assert_eq!(recs[1].id, b"s2");
         std::fs::remove_file(&p).ok();
     }
@@ -698,7 +677,7 @@ mod tests {
         let lk = build_lookup(false);
         let (recs, sl, layout) = index_fasta(&m).unwrap();
         assert_eq!(sl, 4);
-        assert!(!layout.is_single_line());
+        assert!(!layout.single_line);
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (v, _) = analyze(&bm, &rs, &lk, false);
@@ -714,7 +693,7 @@ mod tests {
         let lk = build_lookup(false);
         let up = build_upper();
         let (recs, sl, layout) = index_fasta(&m).unwrap();
-        assert!(!layout.is_single_line());
+        assert!(!layout.single_line);
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
@@ -734,7 +713,7 @@ mod tests {
         let lk = build_lookup(false);
         let up = build_upper();
         let (recs, sl, layout) = index_fasta(&m).unwrap();
-        assert!(!layout.is_single_line());
+        assert!(!layout.single_line);
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
@@ -761,7 +740,7 @@ mod tests {
         let up = build_upper();
         let (recs, sl, layout) = index_fasta(&m).unwrap();
         assert_eq!(sl, 7);
-        assert!(!layout.is_single_line());
+        assert!(!layout.single_line);
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
@@ -774,6 +753,29 @@ mod tests {
         let l: Vec<&str> = c.lines().collect();
         assert_eq!(l[1], "A"); // s1 pos 4 = A
         assert_eq!(l[3], "C"); // s2 pos 4 = C
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
+    }
+    #[test] fn test_mixed_wrapping() {
+        // s1 is single-line, s2 is multi-line — different wrapping per record
+        let p = tmp("mxwr", ">s1\nATGCATGC\n>s2\nATGC\nATCC\n");
+        let o = "/tmp/snpick_t_mxwr_out.fa";
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        assert_eq!(sl, 8);
+        assert!(!layout.single_line); // s2 is multi-line
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].index, 6); // pos 6: G vs C
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        pass2_extract(&m, &mut v, &ep).unwrap();
+        let c = std::fs::read_to_string(o).unwrap();
+        let l: Vec<&str> = c.lines().collect();
+        assert_eq!(l[1], "G"); // s1 pos 6 = G
+        assert_eq!(l[3], "C"); // s2 pos 6 = C
         std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
     #[test] fn test_empty() {
