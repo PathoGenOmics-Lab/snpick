@@ -1,0 +1,127 @@
+name: Build & Release
+
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ closed ]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Only run if the PR was actually merged (not just closed)
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from Cargo.toml
+        id: version
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: $VERSION"
+
+      - name: Check if tag already exists
+        run: |
+          if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.version.outputs.tag }}$"; then
+            echo "⚠️ Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
+            echo "SKIP=true" >> "$GITHUB_ENV"
+          fi
+
+    # Build matrix for cross-platform binaries
+  build:
+    needs: release
+    if: needs.release.outputs.version != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: snpick-linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: snpick-linux-aarch64
+          - target: x86_64-apple-darwin
+            os: macos-13
+            name: snpick-macos-x86_64
+          - target: aarch64-apple-darwin
+            os: macos-14
+            name: snpick-macos-aarch64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/snpick dist/${{ matrix.name }}
+          chmod +x dist/${{ matrix.name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/${{ matrix.name }}
+
+  # Create GitHub release with all binaries
+  publish:
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+
+      - name: List binaries
+        run: find binaries -type f | sort
+
+      - name: Generate checksums
+        run: |
+          cd binaries
+          find . -type f -name 'snpick-*' -exec sh -c '
+            for f; do sha256sum "$f"; done
+          ' _ {} + | sort > ../SHA256SUMS.txt
+          cat ../SHA256SUMS.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release.outputs.tag }}
+          name: SNPick ${{ needs.release.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            binaries/snpick-linux-x86_64/snpick-linux-x86_64
+            binaries/snpick-linux-aarch64/snpick-linux-aarch64
+            binaries/snpick-macos-x86_64/snpick-macos-x86_64
+            binaries/snpick-macos-aarch64/snpick-macos-aarch64
+            SHA256SUMS.txt
