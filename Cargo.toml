@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 bio = "2.0.3"
 clap = { version = "4.5.21", features = ["derive"] }
+memmap2 = "0.9.10"
 
 [profile.release]
 opt-level = 3
