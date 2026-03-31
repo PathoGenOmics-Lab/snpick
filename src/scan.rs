@@ -6,30 +6,40 @@
 use crate::fasta::FastaRecord;
 use crate::types::*;
 
+/// Prefault mmap pages by touching one byte per OS page.
+/// Eliminates soft page faults during the scan loop (~0.5s on 1 GB files).
+#[inline(never)]
+fn prefault(data: &[u8]) {
+    const PAGE: usize = 4096;
+    let mut sum = 0u8;
+    let mut off = 0;
+    while off < data.len() {
+        sum = sum.wrapping_add(data[off]);
+        off += PAGE;
+    }
+    std::hint::black_box(sum);
+}
+
 /// Pass 1: build bitmask of observed nucleotides at each position.
 ///
 /// Iterates all sequences, OR-ing each base's lookup value into the bitmask.
-/// For single-line FASTA, uses L1-cache-friendly chunked access.
-/// For multi-line, scans byte-by-byte skipping newlines.
+/// Prefaults mmap pages first, then scans sequentially per sequence.
+/// For multi-line FASTA, scans byte-by-byte skipping newlines.
 pub fn pass1_scan(
     data: &[u8], records: &[FastaRecord], seq_length: usize,
     layout: SeqLayout, lookup: &[u8; 256],
 ) -> Vec<u8> {
     let mut bitmask = vec![0u8; seq_length];
 
+    // Prefault all pages into RAM before the hot loop
+    prefault(data);
+
     if layout.single_line {
-        const CHUNK: usize = 32 * 1024; // 32 KB — fits in L1 data cache
-        let mut chunk_start = 0;
-        while chunk_start < seq_length {
-            let chunk_end = (chunk_start + CHUNK).min(seq_length);
-            let bm_chunk = &mut bitmask[chunk_start..chunk_end];
-            for rec in records {
-                let seq_chunk = &data[rec.seq_offset + chunk_start..rec.seq_offset + chunk_end];
-                for (bm_byte, &seq_byte) in bm_chunk.iter_mut().zip(seq_chunk.iter()) {
-                    *bm_byte |= lookup[seq_byte as usize];
-                }
+        for rec in records {
+            let seq = &data[rec.seq_offset..rec.seq_offset + seq_length];
+            for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
+                *bm_byte |= lookup[seq_byte as usize];
             }
-            chunk_start = chunk_end;
         }
     } else {
         for rec in records {
