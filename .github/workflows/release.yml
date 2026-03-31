@@ -28,7 +28,7 @@ jobs:
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
           echo "📦 Version: $VERSION"
 
       - name: Check if tag already exists
@@ -118,7 +118,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release.outputs.tag }}
-          name: SNPick ${{ needs.release.outputs.tag }}
+          name: SNPick v${{ needs.release.outputs.version }}
           generate_release_notes: true
           files: |
             binaries/snpick-linux-x86_64/snpick-linux-x86_64
