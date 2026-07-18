@@ -3,3 +3,6 @@ test_*.fasta
 test_*.vcf
 *.vcf
 !src/
+
+# MkDocs build output
+site/

@@ -1,0 +1,83 @@
+site_name: SNPick
+site_description: Fast, memory-efficient extraction of variable sites from FASTA alignments
+site_url: https://pathogenomics-lab.github.io/snpick/
+site_author: Paula Ruiz-Rodriguez
+repo_url: https://github.com/PathoGenOmics-Lab/snpick
+repo_name: PathoGenOmics-Lab/snpick
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; Paula Ruiz-Rodriguez &amp; Mireia Coscolla — I²SysBio (UV-CSIC)
+
+theme:
+  name: material
+  logo: assets/logo.svg
+  favicon: assets/logo.png
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: pink
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: pink
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.instant
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Usage: usage.md
+  - Output formats: output.md
+  - Benchmarks: benchmarks.md
+  - Architecture: architecture.md
+  - Contributing: contributing.md
+  - Changelog: changelog.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/PathoGenOmics-Lab
+    - icon: fontawesome/solid/flask
+      link: https://github.com/PathoGenOmics-Lab/snpick
