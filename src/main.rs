@@ -1,3 +1,4 @@
+mod audit;
 mod coords;
 mod extract;
 mod fasta;
@@ -33,6 +34,18 @@ macro_rules! progress {
 // CLI
 // =============================================================================
 
+/// Policy for out-of-alphabet bytes in the input.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum OnInvalid {
+    /// Skip the check entirely (no cost).
+    #[default]
+    Ignore,
+    /// Warn about out-of-alphabet bytes but continue.
+    Warn,
+    /// Error out if any out-of-alphabet byte is present.
+    Error,
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "snpick",
@@ -58,8 +71,8 @@ snpick -f aln.fasta -o snps.fasta -g -t 8 -q"
 struct Args {
     /// Input FASTA alignment (all sequences must have equal length).
     #[arg(short, long)] fasta: String,
-    /// Output FASTA containing only the variable sites (not needed with --dry-run).
-    #[arg(short, long, required_unless_present = "dry_run")] output: Option<String>,
+    /// Output FASTA containing only the variable sites (not needed with --dry-run/--check).
+    #[arg(short, long, required_unless_present_any = ["dry_run", "check"])] output: Option<String>,
     /// Treat gaps ('-') as a 5th character instead of ignoring them.
     #[arg(short = 'g', long)] include_gaps: bool,
     /// Also write a VCF, named after the output (snps.fasta -> snps.vcf).
@@ -104,6 +117,10 @@ struct Args {
     #[arg(long)] ref_coords: bool,
     /// Write a TSV mapping each variable site (alignment_pos, ref_pos, ref, alt) to this path.
     #[arg(long)] sites_output: Option<String>,
+    /// What to do about out-of-alphabet bytes: ignore (default), warn, or error.
+    #[arg(long, value_enum, default_value_t = OnInvalid::Ignore)] on_invalid: OnInvalid,
+    /// Audit the alignment composition and exit without writing output.
+    #[arg(long)] check: bool,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -351,6 +368,24 @@ fn run() -> io::Result<()> {
     progress!(quiet, "[snpick] Mapped {} bytes. {} sequences × {} positions.{}",
         data.len(), num_samples, seq_length,
         if layout.single_line { "" } else { " (multi-line FASTA)" });
+
+    // Composition audit for --on-invalid / --check (a full extra pass, only on demand).
+    if args.check || args.on_invalid != OnInvalid::Ignore {
+        let hist = audit::composition(data, &records, seq_length, layout);
+        let invalid = audit::invalid_count(&hist);
+        if args.on_invalid == OnInvalid::Error && invalid > 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, format!(
+                "{} out-of-alphabet byte(s) found — is this a nucleotide alignment? \
+                 (use --on-invalid ignore to allow).", invalid)));
+        }
+        if args.on_invalid == OnInvalid::Warn && invalid > 0 {
+            eprintln!("[snpick] Warning: {} out-of-alphabet byte(s) in the alignment.", invalid);
+        }
+        if args.check {
+            progress!(quiet, "[snpick] Composition: {}", audit::summary(&hist));
+            return Ok(());
+        }
+    }
 
     // Pass 1: bitmask scan
     let mut bitmask = pass1_scan(data, &records, seq_length, layout, &lookup);
