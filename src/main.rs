@@ -45,7 +45,12 @@ fn resolve_path(p: &str) -> io::Result<std::path::PathBuf> {
     if path.exists() {
         return std::fs::canonicalize(path);
     }
-    let parent = path.parent().unwrap_or(Path::new("."));
+    // A bare filename has an *empty* parent (Some("")), not None, so canonicalize
+    // would fail with ENOENT. Treat that as the current directory.
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
     let parent_abs = std::fs::canonicalize(parent).map_err(|e| {
         io::Error::new(e.kind(), format!("Cannot resolve parent of '{}': {}", p, e))
     })?;
@@ -390,6 +395,8 @@ mod tests {
         let p = tmp("pdg", ">x\nA\n");
         assert!(check_paths_differ(&p, "/tmp/snpick_t_pdg2.fa").is_ok());
         assert!(check_paths_differ(&p, &p).is_err());
+        // A bare (directory-less) output name must resolve to the cwd, not error.
+        assert!(check_paths_differ(&p, "snpick_t_pdg_bare_out.fa").is_ok());
         std::fs::remove_file(&p).ok();
     }
 
