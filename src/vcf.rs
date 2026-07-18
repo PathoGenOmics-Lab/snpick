@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 
 use crate::fasta::FastaRecord;
-use crate::types::VariablePosition;
+use crate::types::{VariablePosition, IO_BUF};
 
 /// Write VCF output from genotype matrix and variable positions.
 pub fn write_vcf(
@@ -16,7 +16,7 @@ pub fn write_vcf(
 ) -> io::Result<()> {
     let out = File::create(vcf_path).map_err(|e| io::Error::new(e.kind(),
         format!("Cannot create VCF '{}': {}", vcf_path, e)))?;
-    let mut w = BufWriter::with_capacity(4 * 1024 * 1024, out);
+    let mut w = BufWriter::with_capacity(IO_BUF, out);
 
     // Header
     writeln!(w, "##fileformat=VCFv4.2")?;
@@ -32,33 +32,48 @@ pub fn write_vcf(
     }
     writeln!(w)?;
 
-    // Data rows
+    // Data rows. Each row is assembled in a reused byte buffer, so the
+    // num_var × num_samples genotypes are single byte pushes rather than one
+    // formatted write!() per field. Output bytes are identical to the naive form.
     let mut lut = [255u8; 256];
+    let mut row: Vec<u8> = Vec::with_capacity(64 + num_samples * 2);
+    let mut alt: Vec<u8> = Vec::with_capacity(8);
     for (vi, vp) in var_positions.iter().enumerate() {
-        let alt: String = vp.alt_bases.iter()
-            .map(|&b| if b == b'-' { "*".to_string() } else { (b as char).to_string() })
-            .collect::<Vec<_>>().join(",");
+        // ALT alleles, gap → '*'.
+        alt.clear();
+        for (i, &b) in vp.alt_bases.iter().enumerate() {
+            if i > 0 { alt.push(b','); }
+            alt.push(if b == b'-' { b'*' } else { b });
+        }
 
-        // Build allele → index LUT for this position
+        // Build allele → index LUT for this position.
         lut[vp.ref_base as usize] = 0;
         for (i, &ab) in vp.alt_bases.iter().enumerate() {
             lut[ab as usize] = (i + 1) as u8;
         }
 
         // A gap reference renders as '*' (VCF v4.2 REF must be A/C/G/T/N, never '-'),
-        // consistent with the '-'→'*' mapping applied to ALT above.
-        let ref_char = if vp.ref_base == b'-' { '*' } else { vp.ref_base as char };
-        write!(w, "1\t{}\t.\t{}\t{}\t.\tPASS\tNS={}\tGT",
-            vp.index + 1, ref_char, alt, vp.ns)?;
+        // consistent with the '-'→'*' mapping applied to ALT.
+        let ref_byte = if vp.ref_base == b'-' { b'*' } else { vp.ref_base };
 
-        let row = vi * num_samples;
+        row.clear();
+        write!(row, "1\t{}\t.\t", vp.index + 1)?;
+        row.push(ref_byte);
+        row.push(b'\t');
+        row.extend_from_slice(&alt);
+        write!(row, "\t.\tPASS\tNS={}\tGT", vp.ns)?;
+
+        let base = vi * num_samples;
         for si in 0..num_samples {
-            let idx = lut[vcf_geno[row + si] as usize];
-            if idx == 255 { write!(w, "\t.")?; } else { write!(w, "\t{}", idx)?; }
+            row.push(b'\t');
+            let idx = lut[vcf_geno[base + si] as usize];
+            // idx is 0..=4 (ref + at most 4 alts), so a single ASCII digit.
+            if idx == 255 { row.push(b'.'); } else { row.push(b'0' + idx); }
         }
-        writeln!(w)?;
+        row.push(b'\n');
+        w.write_all(&row)?;
 
-        // Reset LUT entries
+        // Reset LUT entries.
         lut[vp.ref_base as usize] = 255;
         for &ab in &vp.alt_bases { lut[ab as usize] = 255; }
     }
