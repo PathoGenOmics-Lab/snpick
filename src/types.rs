@@ -72,6 +72,29 @@ pub fn build_lookup(include_gaps: bool) -> [u8; 256] {
     t
 }
 
+/// Build a nucleotide → bitmask lookup that also resolves IUPAC ambiguity codes to their
+/// constituent bases (R = A|G, etc.). Used only for pass-1 classification under
+/// `--iupac-mode resolve`; NS counting and REF selection keep the strict table.
+pub fn build_iupac_lookup(include_gaps: bool) -> [u8; 256] {
+    let mut t = build_lookup(include_gaps);
+    let mut set = |c: u8, bits: u8| {
+        t[c as usize] = bits;
+        t[(c + 32) as usize] = bits; // lowercase
+    };
+    set(b'R', BIT_A | BIT_G);
+    set(b'Y', BIT_C | BIT_T);
+    set(b'S', BIT_C | BIT_G);
+    set(b'W', BIT_A | BIT_T);
+    set(b'K', BIT_G | BIT_T);
+    set(b'M', BIT_A | BIT_C);
+    set(b'B', BIT_C | BIT_G | BIT_T);
+    set(b'D', BIT_A | BIT_G | BIT_T);
+    set(b'H', BIT_A | BIT_C | BIT_T);
+    set(b'V', BIT_A | BIT_C | BIT_G);
+    // N and other fully-ambiguous codes stay 0.
+    t
+}
+
 /// Build lowercase → uppercase lookup table.
 pub fn build_upper() -> [u8; 256] {
     let mut t = [0u8; 256];

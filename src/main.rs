@@ -34,6 +34,16 @@ macro_rules! progress {
 // CLI
 // =============================================================================
 
+/// How to treat IUPAC ambiguity codes (R, Y, S, ...).
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum IupacMode {
+    /// Treat ambiguity codes as missing data (default).
+    #[default]
+    Missing,
+    /// Resolve ambiguity codes to their constituent bases when classifying sites.
+    Resolve,
+}
+
 /// Policy for out-of-alphabet bytes in the input.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
 enum OnInvalid {
@@ -121,6 +131,8 @@ struct Args {
     #[arg(long, value_enum, default_value_t = OnInvalid::Ignore)] on_invalid: OnInvalid,
     /// Audit the alignment composition and exit without writing output.
     #[arg(long)] check: bool,
+    /// How to treat IUPAC ambiguity codes: missing (default) or resolve to bases.
+    #[arg(long, value_enum, default_value_t = IupacMode::Missing)] iupac_mode: IupacMode,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -387,8 +399,14 @@ fn run() -> io::Result<()> {
         }
     }
 
-    // Pass 1: bitmask scan
-    let mut bitmask = pass1_scan(data, &records, seq_length, layout, &lookup);
+    // Pass 1: bitmask scan. Under --iupac-mode resolve, ambiguity codes are expanded to their
+    // bases *only here* (for classification); NS counting and REF selection keep the strict table.
+    let scan_lookup = if args.iupac_mode == IupacMode::Resolve {
+        build_iupac_lookup(args.include_gaps)
+    } else {
+        lookup
+    };
+    let mut bitmask = pass1_scan(data, &records, seq_length, layout, &scan_lookup);
     let ref_seq = get_ref_seq(data, &records[ref_idx], seq_length, layout);
     let t1 = start.elapsed().as_secs_f64();
 
