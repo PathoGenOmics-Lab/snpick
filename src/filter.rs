@@ -44,10 +44,10 @@ impl SiteFilters {
 }
 
 impl SiteStat {
-    /// Number of samples with a called allele (gaps count only under `include_gaps`).
-    pub fn ns(&self, include_gaps: bool) -> u32 {
-        let acgt: u32 = self.counts.iter().sum();
-        acgt + if include_gaps { self.gap } else { 0 }
+    /// Number of samples with a called allele (i.e. any set bit; gaps count only under
+    /// `include_gaps`, since the lookup then maps '-' to a bit).
+    pub fn ns(&self, num_samples: u32) -> u32 {
+        num_samples - self.missing
     }
 
     /// Counts of the alleles actually present (ACGT with count > 0, plus gap if `include_gaps`).
@@ -61,8 +61,8 @@ impl SiteStat {
 
     /// Whether this site passes every set threshold.
     pub fn passes(&self, f: &SiteFilters, num_samples: u32, include_gaps: bool) -> bool {
-        let ns = self.ns(include_gaps);
-        let missing = num_samples - ns; // each sample lands in exactly one bucket, no underflow
+        let ns = self.ns(num_samples);
+        let missing = self.missing;
         if let Some(ms) = f.min_samples {
             if ns < ms {
                 return false;
@@ -96,15 +96,17 @@ impl SiteStat {
 
 #[inline]
 fn tally(s: &mut SiteStat, bits: u8) {
-    // `bits` comes from the lookup table, so it is a single flag (or 0 for ambiguous).
-    match bits {
-        BIT_A => s.counts[0] += 1,
-        BIT_C => s.counts[1] += 1,
-        BIT_G => s.counts[2] += 1,
-        BIT_T => s.counts[3] += 1,
-        BIT_GAP => s.gap += 1,
-        _ => s.missing += 1,
+    // `bits` may carry several flags under --iupac-mode resolve (e.g. R = A|G), so credit every
+    // set base — matching the classifier's resolved allele set. Zero = uncalled/ambiguous.
+    if bits == 0 {
+        s.missing += 1;
+        return;
     }
+    if bits & BIT_A != 0 { s.counts[0] += 1; }
+    if bits & BIT_C != 0 { s.counts[1] += 1; }
+    if bits & BIT_G != 0 { s.counts[2] += 1; }
+    if bits & BIT_T != 0 { s.counts[3] += 1; }
+    if bits & BIT_GAP != 0 { s.gap += 1; }
 }
 
 /// Count alleles and missing calls at each variable position (sparse pass over just the
@@ -175,6 +177,16 @@ mod tests {
         let f = SiteFilters { max_alleles: Some(2), ..Default::default() };
         assert!(stat(5, 5, 0, 0, 0, 0).passes(&f, 10, false)); // 2 alleles
         assert!(!stat(4, 3, 3, 0, 0, 0).passes(&f, 10, false)); // 3 alleles
+    }
+
+    #[test]
+    fn resolved_iupac_counts_both_bases() {
+        // Under --iupac-mode resolve, an R credits both A and G, so a site is 2-allelic and
+        // has no missing — it must fail --max-alleles 1 and pass --max-missing 0.
+        let s = stat(4, 0, 1, 0, 0, 0); // A=4 (incl. R), G=1 (from R)
+        assert!(!s.passes(&SiteFilters { max_alleles: Some(1), ..Default::default() }, 4, false));
+        assert!(s.passes(&SiteFilters { max_missing: Some(0.0), ..Default::default() }, 4, false));
+        assert_eq!(s.ns(4), 4);
     }
 
     #[test]

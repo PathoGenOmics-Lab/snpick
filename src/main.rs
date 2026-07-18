@@ -459,7 +459,9 @@ fn run() -> io::Result<()> {
     };
     if filters.active() && !var_positions.is_empty() {
         let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
-        let stats = count_sites(data, &records, &pos_indices, layout, &lookup);
+        // Count over the SAME table pass 1 used to classify (resolves IUPAC codes under
+        // --iupac-mode resolve), so the filter judges the same allele set.
+        let stats = count_sites(data, &records, &pos_indices, layout, &scan_lookup);
         let ns_total = num_samples as u32;
         let before = var_positions.len();
         let mut i = 0;
