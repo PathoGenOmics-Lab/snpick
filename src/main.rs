@@ -1,3 +1,4 @@
+mod coords;
 mod extract;
 mod fasta;
 mod filter;
@@ -95,6 +96,10 @@ struct Args {
     #[arg(long)] min_samples: Option<u32>,
     /// Drop sites with more than this many distinct alleles (e.g. 2 = biallelic).
     #[arg(long)] max_alleles: Option<u32>,
+    /// BED file of regions to mask out (excluded from output AND fconst).
+    #[arg(long)] mask: Option<String>,
+    /// Interpret --mask coordinates as reference positions, not alignment columns.
+    #[arg(long, requires = "mask")] mask_ref: bool,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -327,9 +332,22 @@ fn run() -> io::Result<()> {
         if layout.single_line { "" } else { " (multi-line FASTA)" });
 
     // Pass 1: bitmask scan
-    let bitmask = pass1_scan(data, &records, seq_length, layout, &lookup);
+    let mut bitmask = pass1_scan(data, &records, seq_length, layout, &lookup);
     let ref_seq = get_ref_seq(data, &records[ref_idx], seq_length, layout);
     let t1 = start.elapsed().as_secs_f64();
+
+    // Mask out BED regions before classification: masked columns are zeroed, so they classify
+    // as ambiguous and never enter the output or the fconst constant counts.
+    if let Some(bed) = &args.mask {
+        let ivs = coords::parse_bed(bed)?;
+        let ref_pos = if args.mask_ref { Some(coords::ref_positions(&ref_seq)) } else { None };
+        let mask = coords::build_mask(&ivs, seq_length, ref_pos.as_deref());
+        let masked = mask.iter().filter(|&&m| m).count();
+        for (col, &m) in mask.iter().enumerate() {
+            if m { bitmask[col] = 0; }
+        }
+        progress!(quiet, "[snpick] Masked {} columns from {} BED region(s).", masked, ivs.len());
+    }
 
     let (mut var_positions, site_counts) = analyze(&bitmask, &ref_seq, &lookup, args.include_gaps);
 
