@@ -1,12 +1,3 @@
-mod audit;
-mod coords;
-mod extract;
-mod fasta;
-mod filter;
-mod input;
-mod scan;
-mod types;
-mod vcf;
 
 use clap::Parser;
 use std::collections::HashSet;
@@ -15,12 +6,13 @@ use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use crate::extract::{pass2_extract, ExtractParams};
-use crate::fasta::{get_ref_seq, index_fasta, FastaRecord};
-use crate::filter::{count_sites, SiteFilters};
-use crate::scan::{analyze, pass1_scan};
-use crate::types::*;
-use crate::vcf::write_vcf;
+use snpick::extract::{pass2_extract, ExtractParams};
+use snpick::fasta::{get_ref_seq, index_fasta, FastaRecord};
+use snpick::filter::{count_sites, SiteFilters};
+use snpick::scan::{analyze, pass1_scan};
+use snpick::types::*;
+use snpick::vcf::write_vcf;
+use snpick::{audit, coords, input};
 
 /// Emit a `[snpick]` progress line to stderr unless `--quiet` was passed.
 /// Errors are always printed; only progress chatter is gated.
@@ -564,10 +556,10 @@ fn main() {
 mod tests {
     use super::*;
     use memmap2::Mmap;
-    use crate::extract::ExtractParams;
-    use crate::fasta::{get_ref_seq, index_fasta};
-    use crate::scan::{analyze, pass1_scan};
-    use crate::vcf::write_vcf;
+    use snpick::extract::ExtractParams;
+    use snpick::fasta::{get_ref_seq, index_fasta};
+    use snpick::scan::{analyze, pass1_scan};
+    use snpick::vcf::write_vcf;
 
     fn tmp(name: &str, c: &str) -> String {
         let p = format!("/tmp/snpick_t_{}.fa", name);
@@ -818,7 +810,7 @@ mod tests {
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (v, _) = analyze(&bm, &rs, &lk, false);
         let idx: Vec<usize> = v.iter().map(|x| x.index).collect();
-        let stats = crate::filter::count_sites(&m, &recs, &idx, layout, &lk);
+        let stats = snpick::filter::count_sites(&m, &recs, &idx, layout, &lk);
         assert_eq!(stats.len(), 3);
         assert_eq!(stats[0].counts, [5, 0, 0, 1]);
         assert_eq!(stats[1].counts, [3, 3, 0, 0]);
