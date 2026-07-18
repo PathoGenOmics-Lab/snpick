@@ -29,6 +29,7 @@ pub struct ExtractParams<'a> {
     pub upper: &'a [u8; 256],
     pub layout: SeqLayout,
     pub format: OutputFormat,
+    pub progress: bool,
 }
 
 /// Pass 2: extract variable sites from alignment and write output FASTA.
@@ -40,10 +41,11 @@ pub struct ExtractParams<'a> {
 pub fn pass2_extract(
     data: &[u8], var_positions: &mut [VariablePosition], params: &ExtractParams<'_>,
 ) -> io::Result<Option<Vec<u8>>> {
-    let ExtractParams { records, output, collect_vcf, lookup, upper, layout, format } = params;
+    let ExtractParams { records, output, collect_vcf, lookup, upper, layout, format, progress } = params;
     let collect_vcf = *collect_vcf;
     let layout = *layout;
     let format = *format;
+    let progress = *progress;
     let num_var = var_positions.len();
     let num_samples = records.len();
     let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
@@ -125,6 +127,13 @@ pub fn pass2_extract(
                 }
             }
         }
+
+        if progress && (si % 256 == 0) {
+            eprint!("\r[snpick] Extracting sequence {}/{}", si + 1, num_samples);
+        }
+    }
+    if progress {
+        eprintln!("\r[snpick] Extracted {} sequences.            ", num_samples);
     }
 
     if let OutputFormat::Nexus = format {
