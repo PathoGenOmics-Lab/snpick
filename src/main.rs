@@ -499,20 +499,20 @@ fn run() -> io::Result<()> {
             if sp == "-" { "stdout" } else { sp });
     }
 
+    // Variable-site coordinate map — a reporting sidecar, so emitted for --dry-run too.
+    if let Some(sp) = &args.sites_output {
+        write_sites_tsv(sp, &var_positions, ref_pos.as_deref())?;
+        progress!(quiet, "[snpick] Sites TSV written to {}.", sp);
+    }
+
     if dry_run {
-        progress!(quiet, "[snpick] Dry run — no output written.");
+        progress!(quiet, "[snpick] Dry run — no alignment/VCF written.");
         return Ok(());
     }
 
     // Past the dry-run gate, an output path is guaranteed (clap-enforced).
     let out = out_path.as_deref().expect("output is required unless --dry-run");
     let pos_map = if args.ref_coords { ref_pos.as_deref() } else { None };
-
-    // Optional variable-site coordinate map (alignment column -> reference position).
-    if let Some(sp) = &args.sites_output {
-        write_sites_tsv(sp, &var_positions, ref_pos.as_deref())?;
-        progress!(quiet, "[snpick] Sites TSV written to {}.", sp);
-    }
 
     if num_var == 0 {
         progress!(quiet, "[snpick] No variable positions found — writing empty alignment.");
