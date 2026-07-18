@@ -12,17 +12,26 @@ use crate::types::*;
 /// worth its overhead — roughly 50 seqs × 4M bp.
 const PARALLEL_MIN_WORK: usize = 200_000_000;
 
-/// Prefault mmap pages by touching one byte per OS page.
-/// Eliminates soft page faults during the scan loop (~0.5s on 1 GB files).
+/// Prefault mmap pages by touching one byte per OS page. Eliminates soft page faults during
+/// the scan loop. For large files this is parallelised so it is no longer a single-core stall
+/// (~10 s on a 20 GB alignment) ahead of the parallel scan.
 #[inline(never)]
 fn prefault(data: &[u8]) {
     const PAGE: usize = 4096;
-    let mut sum = 0u8;
-    let mut off = 0;
-    while off < data.len() {
-        sum = sum.wrapping_add(data[off]);
-        off += PAGE;
-    }
+    let n = data.len();
+    let num_pages = n.div_ceil(PAGE);
+    let sum: u8 = if n >= 256 * 1024 * 1024 {
+        (0..num_pages)
+            .into_par_iter()
+            .map(|p| data[p * PAGE])
+            .reduce(|| 0u8, |a, b| a.wrapping_add(b))
+    } else {
+        let mut s = 0u8;
+        for p in 0..num_pages {
+            s = s.wrapping_add(data[p * PAGE]);
+        }
+        s
+    };
     std::hint::black_box(sum);
 }
 
@@ -78,16 +87,39 @@ fn scan_parallel(
     bitmask
 }
 
+/// Branchless nucleotide → bitmask for the standard A/C/G/T(+gap) alphabet. Unlike a table
+/// gather, this auto-vectorises (SSE2/AVX2/NEON). `gap_mask` is 1 when gaps are counted, else 0.
+/// Byte-identical to the strict lookup table for the ACGT(+gap) case.
+#[inline(always)]
+fn acgt_bits(b: u8, gap_mask: u8) -> u8 {
+    let u = b & !0x20; // fold letter case (A/a -> A)
+    (u == b'A') as u8
+        | (((u == b'C') as u8) << 1)
+        | (((u == b'G') as u8) << 2)
+        | (((u == b'T') as u8) << 3)
+        | ((((b == b'-') as u8) & gap_mask) << 4)
+}
+
 /// Sequential scan of a set of records into a bitmask.
 fn scan_sequential(
     data: &[u8], records: &[FastaRecord], seq_length: usize,
     layout: SeqLayout, lookup: &[u8; 256], bitmask: &mut [u8],
 ) {
+    // The branchless kernel is only valid for the standard alphabet; IUPAC-resolve tables
+    // (where e.g. 'R' maps to a nonzero bitmask) fall back to the general gather.
+    let fast = lookup[b'R' as usize] == 0;
+    let gap_mask = if lookup[b'-' as usize] != 0 { 1u8 } else { 0u8 };
     if layout.single_line {
         for rec in records {
             let seq = &data[rec.seq_offset..rec.seq_offset + seq_length];
-            for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
-                *bm_byte |= lookup[seq_byte as usize];
+            if fast {
+                for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
+                    *bm_byte |= acgt_bits(seq_byte, gap_mask);
+                }
+            } else {
+                for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
+                    *bm_byte |= lookup[seq_byte as usize];
+                }
             }
         }
     } else {
@@ -145,6 +177,18 @@ pub fn analyze(
 mod tests {
     use super::*;
     use crate::fasta::index_fasta;
+
+    #[test]
+    fn acgt_bits_matches_lookup() {
+        // The branchless kernel must be byte-identical to the strict lookup table.
+        for gap in [false, true] {
+            let lk = build_lookup(gap);
+            let gm = if gap { 1u8 } else { 0u8 };
+            for b in 0u16..256 {
+                assert_eq!(acgt_bits(b as u8, gm), lk[b as usize], "byte {}", b);
+            }
+        }
+    }
 
     #[test]
     fn parallel_matches_sequential() {
