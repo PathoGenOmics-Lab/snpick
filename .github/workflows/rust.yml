@@ -2,7 +2,7 @@ name: Rust
 
 on:
   push:
-    branches: [ "main", "1.0.1" ]
+    branches: [ "main", "1.0.2" ]
   pull_request:
     branches: [ "main" ]
 
