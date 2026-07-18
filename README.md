@@ -88,7 +88,7 @@ Optional VCF v4.2 output with per-sample genotypes. Reference allele taken from 
 ### IUPAC and gap handling
 
 - **Ambiguous bases** (N, R, Y, etc.): not counted as alleles — positions are only variable if they have ≥2 standard bases (A, C, G, T)
-- **Gaps** (`-`): ignored by default, included as a 5th character with `-g`
+- **Gaps** (`-`): ignored by default, included as a 5th character with `-g`. In the VCF, gap alleles are written as `*` (an alignment-gap convention shared with snp-sites; note some downstream tools read `*` as a spanning deletion)
 
 ### Parallel processing
 
@@ -115,11 +115,15 @@ cargo build --release
 # Binary at target/release/snpick
 ```
 
-### Pre-built binary (Linux)
+### Pre-built binary
+
+Grab the binary for your platform from the [latest release](https://github.com/PathoGenOmics-Lab/snpick/releases/latest) — Linux (`x86_64`, `aarch64`) and macOS (`x86_64`, `aarch64`), with `SHA256SUMS.txt` published for verification:
 
 ```bash
-wget https://github.com/PathoGenOmics-Lab/snpick/releases/latest/download/snpick
-chmod +x snpick
+# choose: snpick-linux-x86_64 | snpick-linux-aarch64 | snpick-macos-x86_64 | snpick-macos-aarch64
+curl -LO https://github.com/PathoGenOmics-Lab/snpick/releases/latest/download/snpick-linux-x86_64
+chmod +x snpick-linux-x86_64
+./snpick-linux-x86_64 --help
 ```
 
 ---
