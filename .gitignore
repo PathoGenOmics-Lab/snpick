@@ -9,3 +9,9 @@ site/
 
 # MkDocs Material social-cards / plugin cache
 .cache/
+
+# cargo-fuzz
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/Cargo.lock

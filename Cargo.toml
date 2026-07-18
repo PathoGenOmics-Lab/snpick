@@ -24,6 +24,14 @@ rayon = "1.11.0"
 # Pure-Rust (miniz_oxide) backend keeps the build C-toolchain-free for Bioconda.
 flate2 = "1.0"
 
+[dev-dependencies]
+proptest = "1"
+criterion = "0.5"
+
+[[bench]]
+name = "scan"
+harness = false
+
 [profile.release]
 opt-level = 3
 lto = "fat"

@@ -1,0 +1,24 @@
+[package]
+name = "snpick-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Own workspace so it does not interfere with the parent package's build.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.snpick]
+path = ".."
+
+[[bin]]
+name = "index_fasta"
+path = "fuzz_targets/index_fasta.rs"
+test = false
+doc = false
+bench = false
