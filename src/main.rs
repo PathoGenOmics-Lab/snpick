@@ -352,6 +352,18 @@ fn run() -> io::Result<()> {
         Some(vp)
     } else { None };
 
+    // Sidecar outputs must not collide with the input (which is mmapped in place — overwriting
+    // it truncates the live mapping and corrupts the run) or with the other outputs.
+    for sidecar in [args.stats_json.as_deref(), args.sites_output.as_deref()].into_iter().flatten() {
+        check_paths_differ(&args.fasta, sidecar)?;
+        if let Some(ref out) = out_path {
+            check_paths_differ(out, sidecar)?;
+        }
+        if let Some(ref vp) = vcf_path {
+            check_paths_differ(vp, sidecar)?;
+        }
+    }
+
     // Map the input, transparently decompressing gzip/bgzip and reading stdin ("-") as needed.
     let input = input::map_input(&args.fasta)?;
     if input.mmap.is_empty() {
