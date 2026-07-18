@@ -447,6 +447,30 @@ mod tests {
         std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
 
+    #[test] fn test_single_line_blank_line() {
+        // Blank line after the header in an otherwise single-line file: must not
+        // drop the SNP. The record is forced onto the newline-skipping path.
+        let p = tmp("blank", ">s1\n\nAAAA\n>s2\n\nAAAT\n");
+        let o = "/tmp/snpick_t_blank_out.fa";
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        assert_eq!(sl, 4);
+        assert!(!layout.single_line);
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].index, 3);
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        pass2_extract(&m, &mut v, &ep).unwrap();
+        let c = std::fs::read_to_string(o).unwrap();
+        let l: Vec<&str> = c.lines().collect();
+        assert_eq!(l[1], "A"); assert_eq!(l[3], "T");
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
+    }
+
     #[test] fn test_single_sequence() {
         // Single sequence should produce 0 variable sites
         let p = tmp("sing", ">s1\nATGC\n");
