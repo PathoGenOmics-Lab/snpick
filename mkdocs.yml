@@ -68,6 +68,7 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - Usage: usage.md
+  - Tutorial: tutorials/tutorial.ipynb
   - Output formats: output.md
   - Benchmarks: benchmarks.md
   - Architecture: architecture.md
@@ -122,6 +123,10 @@ markdown_extensions:
 plugins:
   - search
   - tags
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
+      ignore_h1_titles: true
   - glightbox:
       touchNavigation: true
       loop: false
