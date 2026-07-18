@@ -45,8 +45,11 @@ pub fn write_vcf(
             lut[ab as usize] = (i + 1) as u8;
         }
 
+        // A gap reference renders as '*' (VCF v4.2 REF must be A/C/G/T/N, never '-'),
+        // consistent with the '-'→'*' mapping applied to ALT above.
+        let ref_char = if vp.ref_base == b'-' { '*' } else { vp.ref_base as char };
         write!(w, "1\t{}\t.\t{}\t{}\t.\tPASS\tNS={}\tGT",
-            vp.index + 1, vp.ref_base as char, alt, vp.ns)?;
+            vp.index + 1, ref_char, alt, vp.ns)?;
 
         let row = vi * num_samples;
         for si in 0..num_samples {

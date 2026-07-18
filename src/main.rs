@@ -287,6 +287,54 @@ mod tests {
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
     }
 
+    #[test] fn test_vcf_gap_ref() {
+        // Gap in the reference at a variable site: REF must be '*' (valid VCF v4.2),
+        // never a bare '-'.
+        let p = tmp("vgref", ">ref\nA-GC\n>s1\nATGC\n>s2\nA-GT\n");
+        let fo = "/tmp/snpick_t_vgref_out.fa"; let vo = "/tmp/snpick_t_vgref.vcf";
+        let m = setup(&p);
+        let lk = build_lookup(true);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, true);
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        let c = std::fs::read_to_string(vo).unwrap();
+        let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
+        let f: Vec<&str> = dl[0].split('\t').collect();
+        assert_eq!(f[1], "2");            // POS (gap-in-ref site)
+        assert_eq!(f[3], "*");            // REF: gap → '*', not '-'
+        assert_eq!(f[4], "T");            // ALT
+        assert!(!c.contains("\t-\t"));    // no bare hyphen field anywhere
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
+    }
+
+    #[test] fn test_vcf_gap_alt() {
+        // Gap sample at a multi-allelic site renders as the '*' ALT allele.
+        let p = tmp("vgalt", ">ref\nATGC\n>s1\nTTGC\n>s2\n-TGC\n");
+        let fo = "/tmp/snpick_t_vgalt_out.fa"; let vo = "/tmp/snpick_t_vgalt.vcf";
+        let m = setup(&p);
+        let lk = build_lookup(true);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, true);
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        let c = std::fs::read_to_string(vo).unwrap();
+        let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
+        let f: Vec<&str> = dl[0].split('\t').collect();
+        assert_eq!(f[1], "1");            // POS
+        assert_eq!(f[3], "A");            // REF
+        assert_eq!(f[4], "T,*");          // ALT: gap sample → '*'
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
+    }
+
     #[test] fn test_desc_preserved() {
         let p = tmp("descg", ">s1 some description\nATGC\n>s2 another desc\nATCC\n");
         let o = "/tmp/snpick_t_descg_out.fa";
