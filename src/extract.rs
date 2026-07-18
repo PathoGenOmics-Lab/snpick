@@ -28,6 +28,7 @@ pub struct ExtractParams<'a> {
     pub lookup: &'a [u8; 256],
     pub upper: &'a [u8; 256],
     pub layout: SeqLayout,
+    pub format: OutputFormat,
 }
 
 /// Pass 2: extract variable sites from alignment and write output FASTA.
@@ -39,14 +40,28 @@ pub struct ExtractParams<'a> {
 pub fn pass2_extract(
     data: &[u8], var_positions: &mut [VariablePosition], params: &ExtractParams<'_>,
 ) -> io::Result<Option<Vec<u8>>> {
-    let ExtractParams { records, output, collect_vcf, lookup, upper, layout } = params;
+    let ExtractParams { records, output, collect_vcf, lookup, upper, layout, format } = params;
     let collect_vcf = *collect_vcf;
     let layout = *layout;
+    let format = *format;
     let num_var = var_positions.len();
     let num_samples = records.len();
     let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
 
     let mut writer = BufWriter::with_capacity(IO_BUF, open_sink(output)?);
+
+    // Format preamble.
+    match format {
+        OutputFormat::Fasta => {}
+        OutputFormat::Phylip => writeln!(writer, "{} {}", num_samples, num_var)?,
+        OutputFormat::Nexus => {
+            writeln!(writer, "#NEXUS")?;
+            writeln!(writer, "BEGIN DATA;")?;
+            writeln!(writer, "  DIMENSIONS NTAX={} NCHAR={};", num_samples, num_var)?;
+            writeln!(writer, "  FORMAT DATATYPE=DNA MISSING=N GAP=-;")?;
+            writeln!(writer, "  MATRIX")?;
+        }
+    }
 
     let mut vcf_geno: Vec<u8> = if collect_vcf { vec![0u8; num_var * num_samples] } else { Vec::new() };
     let mut ns_counts: Vec<usize> = if collect_vcf { vec![0usize; num_var] } else { Vec::new() };
@@ -75,15 +90,32 @@ pub fn pass2_extract(
             }
         }
 
-        writer.write_all(b">")?;
-        writer.write_all(rec.id)?;
-        if !rec.desc.is_empty() {
-            writer.write_all(b" ")?;
-            writer.write_all(rec.desc)?;
+        match format {
+            OutputFormat::Fasta => {
+                writer.write_all(b">")?;
+                writer.write_all(rec.id)?;
+                if !rec.desc.is_empty() {
+                    writer.write_all(b" ")?;
+                    writer.write_all(rec.desc)?;
+                }
+                writer.write_all(b"\n")?;
+                writer.write_all(&var_buf)?;
+                writer.write_all(b"\n")?;
+            }
+            OutputFormat::Phylip => {
+                writer.write_all(rec.id)?;
+                writer.write_all(b"  ")?;
+                writer.write_all(&var_buf)?;
+                writer.write_all(b"\n")?;
+            }
+            OutputFormat::Nexus => {
+                writer.write_all(b"    ")?;
+                writer.write_all(rec.id)?;
+                writer.write_all(b"  ")?;
+                writer.write_all(&var_buf)?;
+                writer.write_all(b"\n")?;
+            }
         }
-        writer.write_all(b"\n")?;
-        writer.write_all(&var_buf)?;
-        writer.write_all(b"\n")?;
 
         if collect_vcf {
             for (vi, &nuc) in var_buf.iter().enumerate() {
@@ -93,6 +125,11 @@ pub fn pass2_extract(
                 }
             }
         }
+    }
+
+    if let OutputFormat::Nexus = format {
+        writeln!(writer, "  ;")?;
+        writeln!(writer, "END;")?;
     }
 
     writer.flush()?;

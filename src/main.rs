@@ -133,6 +133,8 @@ struct Args {
     #[arg(long)] check: bool,
     /// How to treat IUPAC ambiguity codes: missing (default) or resolve to bases.
     #[arg(long, value_enum, default_value_t = IupacMode::Missing)] iupac_mode: IupacMode,
+    /// Output format for the reduced alignment: fasta (default), phylip, or nexus.
+    #[arg(long, value_enum, default_value_t = OutputFormat::Fasta)] format: OutputFormat,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -486,24 +488,8 @@ fn run() -> io::Result<()> {
         progress!(quiet, "[snpick] Sites TSV written to {}.", sp);
     }
 
-    // Handle zero-variant case
     if num_var == 0 {
-        progress!(quiet, "[snpick] No variable positions — writing empty output.");
-        let mut w = BufWriter::new(crate::extract::open_sink(out)?);
-        for rec in &records {
-            w.write_all(b">")?;
-            w.write_all(rec.id)?;
-            if !rec.desc.is_empty() { w.write_all(b" ")?; w.write_all(rec.desc)?; }
-            writeln!(w)?; writeln!(w)?;
-        }
-        w.flush()?;
-        // Still honour a requested VCF: emit a valid header-only file so a
-        // pipeline that declares the .vcf as an output doesn't break.
-        if let Some(ref vp) = vcf_path {
-            write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom, &ref_name, pos_map)?;
-            progress!(quiet, "[snpick] VCF written to {} (header only — no variable sites).", vp);
-        }
-        return Ok(());
+        progress!(quiet, "[snpick] No variable positions found — writing empty alignment.");
     }
 
     // VCF size guard
@@ -520,7 +506,7 @@ fn run() -> io::Result<()> {
     // Pass 2: extract variable sites
     let ep = ExtractParams {
         records: &records, output: out,
-        collect_vcf: do_vcf, lookup: &lookup, upper: &upper, layout,
+        collect_vcf: do_vcf, lookup: &lookup, upper: &upper, layout, format: args.format,
     };
     let vcf_geno = pass2_extract(data, &mut var_positions, &ep)?;
     progress!(quiet, "[snpick] Pass 2: Wrote {} sequences to {}.", num_samples, out);
@@ -604,7 +590,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -622,7 +608,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
-        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
         write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
@@ -643,7 +629,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
-        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
         write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
@@ -665,7 +651,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
-        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
         write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
@@ -689,7 +675,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
-        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
         write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
@@ -726,7 +712,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         assert!(c.contains(">s1 some description"));
@@ -774,6 +760,25 @@ mod tests {
         assert!(c.contains("\"reference\": \"H37Rv\""));
         assert!(c.contains("\"sequences\": 6"));
         std::fs::remove_file(p).ok();
+    }
+
+    #[test] fn test_phylip_output() {
+        let p = tmp("phy", ">s1\nATGC\n>s2\nATGT\n");
+        let o = "/tmp/snpick_t_phy_out.phy";
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Phylip };
+        pass2_extract(&m, &mut v, &ep).unwrap();
+        let l: Vec<String> = std::fs::read_to_string(o).unwrap().lines().map(|s| s.to_string()).collect();
+        assert_eq!(l[0], "2 1");
+        assert_eq!(l[1], "s1  C");
+        assert_eq!(l[2], "s2  T");
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
 
     #[test] fn test_count_sites() {
@@ -910,7 +915,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -928,7 +933,7 @@ mod tests {
         let bm = pass1_scan(&m, &recs, sl, layout, &lk);
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
-        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
         write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(fo).unwrap();
@@ -952,7 +957,7 @@ mod tests {
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         assert_eq!(v.len(), 1); assert_eq!(v[0].index, 4);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -972,7 +977,7 @@ mod tests {
         let rs = get_ref_seq(&m, &recs[0], sl, layout);
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         assert_eq!(v.len(), 1); assert_eq!(v[0].index, 6);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -996,7 +1001,7 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].index, 2);
         let o = "/tmp/snpick_t_crlfml_out.fa";
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -1020,7 +1025,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].index, 3);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -1057,7 +1062,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         assert_eq!(v.len(), 1);
         let o = "/tmp/snpick_t_noeof_out.fa";
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();
@@ -1080,7 +1085,7 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].ref_base, b'A');
         assert_eq!(v[0].alt_bases, vec![b'C']);
-        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
         write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
@@ -1109,7 +1114,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].index, 3);
-        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta };
         pass2_extract(&m, &mut v, &ep).unwrap();
         let c = std::fs::read_to_string(o).unwrap();
         let l: Vec<&str> = c.lines().collect();

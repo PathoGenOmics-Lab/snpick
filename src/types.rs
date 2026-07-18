@@ -19,6 +19,18 @@ pub const MAX_VCF_GENO_BYTES: usize = 4_000_000_000;
 /// I/O buffer size for BufWriter (16 MB).
 pub const IO_BUF: usize = 16 * 1024 * 1024;
 
+/// Output format for the reduced alignment.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    /// FASTA (default).
+    #[default]
+    Fasta,
+    /// Relaxed PHYLIP (IQ-TREE / RAxML).
+    Phylip,
+    /// NEXUS DATA block (MrBayes / PAUP* / SplitsTree).
+    Nexus,
+}
+
 /// Whether all sequences are single-line (no embedded newlines).
 /// When true, `data[seq_offset + pos]` gives the base at `pos` directly.
 /// When false, we must scan skipping newlines for each record.
