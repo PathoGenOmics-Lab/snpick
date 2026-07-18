@@ -94,6 +94,5 @@ pub fn pass2_extract(
         }
     }
 
-    eprintln!("[snpick] Pass 2: Wrote {} sequences to {}.", num_samples, output);
     if collect_vcf { Ok(Some(vcf_geno)) } else { Ok(None) }
 }

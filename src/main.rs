@@ -17,6 +17,14 @@ use crate::scan::{analyze, pass1_scan};
 use crate::types::*;
 use crate::vcf::write_vcf;
 
+/// Emit a `[snpick]` progress line to stderr unless `--quiet` was passed.
+/// Errors are always printed; only progress chatter is gated.
+macro_rules! progress {
+    ($quiet:expr, $($arg:tt)*) => {
+        if !$quiet { eprintln!($($arg)*); }
+    };
+}
+
 // =============================================================================
 // CLI
 // =============================================================================
@@ -34,6 +42,8 @@ struct Args {
     #[arg(short = 'g', long)] include_gaps: bool,
     #[arg(long)] vcf: bool,
     #[arg(long)] vcf_output: Option<String>,
+    /// Silence progress logs on stderr (errors are still reported).
+    #[arg(short = 'q', long)] quiet: bool,
     /// Number of threads for the parallel scan (default: all logical cores).
     #[arg(short = 't', long, value_parser = parse_threads)]
     threads: Option<usize>,
@@ -89,6 +99,7 @@ fn check_paths_differ(a: &str, b: &str) -> io::Result<()> {
 
 fn run() -> io::Result<()> {
     let args = Args::parse();
+    let quiet = args.quiet;
 
     // Configure the Rayon pool up front. Absent, Rayon uses all logical cores;
     // pinning it keeps wall-clock deterministic on shared HPC/SLURM nodes.
@@ -142,7 +153,7 @@ fn run() -> io::Result<()> {
     let (records, seq_length, layout) = index_fasta(data)?;
     let num_samples = records.len();
 
-    eprintln!("[snpick] Mapped {} bytes. {} sequences × {} positions.{}",
+    progress!(quiet, "[snpick] Mapped {} bytes. {} sequences × {} positions.{}",
         data.len(), num_samples, seq_length,
         if layout.single_line { "" } else { " (multi-line FASTA)" });
 
@@ -157,15 +168,15 @@ fn run() -> io::Result<()> {
     drop(bitmask);
     drop(ref_seq);
 
-    eprintln!("[snpick] {} variable, {} constant ({}), {} ambiguous-only, {} total.",
+    progress!(quiet, "[snpick] {} variable, {} constant ({}), {} ambiguous-only, {} total.",
         site_counts.variable, site_counts.constant.total(), site_counts.constant,
         site_counts.ambiguous, seq_length);
-    eprintln!("[snpick] ASC fconst: {}", site_counts.constant.fconst());
-    eprintln!("[snpick] Pass 1 took {:.2}s.", t1);
+    progress!(quiet, "[snpick] ASC fconst: {}", site_counts.constant.fconst());
+    progress!(quiet, "[snpick] Pass 1 took {:.2}s.", t1);
 
     // Handle zero-variant case
     if num_var == 0 {
-        eprintln!("[snpick] No variable positions — writing empty output.");
+        progress!(quiet, "[snpick] No variable positions — writing empty output.");
         let out = File::create(&args.output)?;
         let mut w = BufWriter::new(out);
         for rec in &records {
@@ -179,7 +190,7 @@ fn run() -> io::Result<()> {
         // pipeline that declares the .vcf as an output doesn't break.
         if let Some(ref vp) = vcf_path {
             write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom)?;
-            eprintln!("[snpick] VCF written to {} (header only — no variable sites).", vp);
+            progress!(quiet, "[snpick] VCF written to {} (header only — no variable sites).", vp);
         }
         return Ok(());
     }
@@ -201,14 +212,15 @@ fn run() -> io::Result<()> {
         collect_vcf: do_vcf, lookup: &lookup, upper: &upper, layout,
     };
     let vcf_geno = pass2_extract(data, &mut var_positions, &ep)?;
+    progress!(quiet, "[snpick] Pass 2: Wrote {} sequences to {}.", num_samples, args.output);
 
     // Write VCF
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
         write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom)?;
-        eprintln!("[snpick] VCF written to {}.", vp);
+        progress!(quiet, "[snpick] VCF written to {}.", vp);
     }
 
-    eprintln!("[snpick] Done in {:.2}s. {} vars from {} seqs × {} pos.",
+    progress!(quiet, "[snpick] Done in {:.2}s. {} vars from {} seqs × {} pos.",
         start.elapsed().as_secs_f64(), num_var, num_samples, seq_length);
     Ok(())
 }

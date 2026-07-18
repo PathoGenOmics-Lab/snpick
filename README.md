@@ -139,6 +139,7 @@ snpick [OPTIONS] --fasta <FASTA> --output <OUTPUT>
 | `--vcf-output <FILE>` | | Custom VCF output path |
 | `-t, --threads <N>` | | Threads for the parallel scan (default: all cores) |
 | `--chrom <NAME>` | | CHROM / contig name in the VCF (default: `1`) |
+| `-q, --quiet` | | Silence progress logs (errors still shown) |
 
 ### Example
 
