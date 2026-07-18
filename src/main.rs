@@ -1,7 +1,6 @@
 
 use clap::Parser;
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Write};
 use std::path::Path;
 use std::time::Instant;
@@ -104,11 +103,11 @@ struct Args {
     /// Drop these sample IDs (comma-separated, or @file). Excludes --keep-samples.
     #[arg(long, conflicts_with = "keep_samples")] exclude_samples: Option<String>,
     /// Drop sites whose fraction of missing genotypes exceeds this (0.0-1.0).
-    #[arg(long)] max_missing: Option<f64>,
+    #[arg(long, value_parser = parse_fraction)] max_missing: Option<f64>,
     /// Drop sites whose minor-allele count is below this.
     #[arg(long)] mac: Option<u32>,
     /// Drop sites whose minor-allele frequency is below this (0.0-1.0).
-    #[arg(long)] maf: Option<f64>,
+    #[arg(long, value_parser = parse_fraction)] maf: Option<f64>,
     /// Drop sites with fewer than this many samples with data.
     #[arg(long)] min_samples: Option<u32>,
     /// Drop sites with more than this many distinct alleles (e.g. 2 = biallelic).
@@ -139,6 +138,15 @@ fn parse_threads(s: &str) -> Result<usize, String> {
         return Err("thread count must be at least 1".to_string());
     }
     Ok(n)
+}
+
+/// Parse a fraction in [0.0, 1.0] (rejects NaN, infinities and out-of-range values).
+fn parse_fraction(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("'{}' is not a number", s))?;
+    if !v.is_finite() || !(0.0..=1.0).contains(&v) {
+        return Err(format!("'{}' must be a fraction between 0.0 and 1.0", s));
+    }
+    Ok(v)
 }
 
 // =============================================================================
@@ -274,8 +282,7 @@ fn apply_sample_filter(
 /// Write a TSV mapping each variable site to its alignment column, reference position,
 /// REF and ALT alleles (gaps rendered as '*').
 fn write_sites_tsv(path: &str, var: &[VariablePosition], ref_pos: Option<&[u32]>) -> io::Result<()> {
-    let mut w = BufWriter::new(File::create(path).map_err(|e| io::Error::new(e.kind(),
-        format!("Cannot create sites TSV '{}': {}", path, e)))?);
+    let mut w = BufWriter::new(snpick::extract::open_sink(path)?);
     writeln!(w, "alignment_pos\tref_pos\tref\talt")?;
     for vp in var {
         // Clamp to 1 to match the VCF POS (a leading-gap reference column has ungapped
@@ -364,6 +371,10 @@ fn run() -> io::Result<()> {
         if let Some(ref vp) = vcf_path {
             check_paths_differ(vp, sidecar)?;
         }
+    }
+    // ...and the two sidecars must not clobber each other.
+    if let (Some(a), Some(b)) = (args.stats_json.as_deref(), args.sites_output.as_deref()) {
+        check_paths_differ(a, b)?;
     }
 
     // Map the input, transparently decompressing gzip/bgzip and reading stdin ("-") as needed.
@@ -572,6 +583,7 @@ fn main() {
 mod tests {
     use super::*;
     use memmap2::Mmap;
+    use std::fs::File;
     use snpick::extract::ExtractParams;
     use snpick::fasta::{get_ref_seq, index_fasta};
     use snpick::scan::{analyze, pass1_scan};

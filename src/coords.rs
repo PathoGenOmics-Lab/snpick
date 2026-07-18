@@ -25,11 +25,13 @@ pub fn parse_bed(path: &str) -> io::Result<Vec<(usize, usize)>> {
     let mut ivs = Vec::new();
     for (n, line) in content.lines().enumerate() {
         let line = line.trim();
-        if line.is_empty()
-            || line.starts_with('#')
-            || line.starts_with("track")
-            || line.starts_with("browser")
-        {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Skip BED header lines, but only when the FIRST token is exactly `track`/`browser`
+        // (not a chrom that merely starts with those letters, e.g. `track_scaffold_1`).
+        let first = line.split_whitespace().next().unwrap_or("");
+        if first == "track" || first == "browser" {
             continue;
         }
         let mut f = line.split('\t');
