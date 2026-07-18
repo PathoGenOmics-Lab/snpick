@@ -54,9 +54,14 @@ genotype).
 ## Design notes
 
 - **Lookup tables** — 256-byte arrays give O(1) nucleotide classification and case conversion.
+- **Auto-vectorized scan** — the single-line hot loop uses a branchless A/C/G/T(+gap) kernel that
+  LLVM vectorizes (SSE2/AVX2/NEON); a test asserts it is byte-identical to the table lookup.
 - **Zero-copy** — IDs, descriptions, and sequence bytes are slices into the single mmap.
 - **O(L) memory** — the working set scales with alignment length, not with the number of
   sequences, which is what lets SNPick handle thousands of genomes with a small footprint.
 
-The source is split into focused modules: `fasta` (indexing), `scan` (pass 1 + classification),
-`extract` (pass 2), `vcf` (VCF writer), and `types` (shared constants and lookup tables).
+The core is a **library crate** (`snpick`) of focused modules — `fasta` (indexing), `scan`
+(pass 1 + classification), `extract` (pass 2), `vcf`, `filter` (per-site counting), `coords`
+(reference coordinates & BED masking), `audit` (composition), `input` (gzip/stdin) and `types` —
+with the CLI as a thin binary on top. `rayon` and `memmap2` sit behind default-on `parallel` and
+`mmap` features, so the library also builds for `wasm32`.

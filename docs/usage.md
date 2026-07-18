@@ -7,23 +7,67 @@ tags:
 # Usage
 
 ```
-snpick [OPTIONS] --fasta <FASTA> --output <OUTPUT>
+snpick [OPTIONS] --fasta <FASTA>
 ```
 
-## Options
+`-f/--fasta` is always required. `-o/--output` is required **unless** `--dry-run` or `--check`
+is given. Use `-` in place of a path for `--fasta`, `--output` or `--stats-json` to read from
+stdin / write to stdout. Run `snpick --help` for the authoritative, always-current list.
 
-| Argument | Required | Description |
-|---|:---:|---|
-| `-f, --fasta <FILE>` | :material-check: | Input FASTA alignment (all sequences must have equal length) |
-| `-o, --output <FILE>` | :material-check: | Output FASTA containing only the variable sites |
-| `-g, --include-gaps` | | Treat gaps (`-`) as a 5th character instead of ignoring them |
-| `--vcf` | | Also write a VCF, named after the output (`snps.fasta` → `snps.vcf`) |
-| `--vcf-output <FILE>` | | Write the VCF to a custom path (implies `--vcf`) |
-| `-t, --threads <N>` | | Threads for the parallel scan (default: all logical cores) |
-| `--chrom <NAME>` | | `CHROM` / contig name written to the VCF (default: `1`) |
-| `-q, --quiet` | | Silence progress logs on stderr (errors are still reported) |
-| `-h, --help` | | Print help |
-| `-V, --version` | | Print version |
+## Core
+
+| Argument | Description |
+|---|---|
+| `-f, --fasta <FILE>` | Input FASTA alignment (`-` = stdin; gzip/bgzip auto-detected) |
+| `-o, --output <FILE>` | Output FASTA of variable sites (`-` = stdout) |
+| `-g, --include-gaps` | Treat gaps (`-`) as a 5th character |
+| `--format <FMT>` | Reduced-alignment format: `fasta` (default), `phylip`, `nexus` |
+| `-t, --threads <N>` | Threads for the parallel scan (default: all logical cores) |
+| `-q, --quiet` | Silence progress logs (errors still shown) |
+| `-v`, `-vv` | Increase detail (diagnostics; allele-class histogram) |
+
+## VCF & coordinates
+
+| Argument | Description |
+|---|---|
+| `--vcf` | Write a VCF named after the output (`snps.fasta` → `snps.vcf`) |
+| `--vcf-output <FILE>` | Write the VCF to a custom path (implies `--vcf`) |
+| `--chrom <NAME>` | `CHROM` / `##contig` name (default `1`, e.g. `NC_000962.3`) |
+| `--reference <ID>` | Sequence ID used for REF/polarity (default: first) |
+| `--ref-coords` | Write `POS` as the ungapped reference position, not the alignment column |
+| `--sites-output <TSV>` | Map each site: `alignment_pos`, `ref_pos`, `ref`, `alt` |
+
+## Filtering & masking
+
+| Argument | Description |
+|---|---|
+| `--max-missing <f>` | Drop sites with more than fraction `f` of missing genotypes |
+| `--mac <n>` | Drop sites with minor-allele count below `n` (e.g. `2` drops singletons) |
+| `--maf <f>` | Drop sites with minor-allele frequency below `f` |
+| `--min-samples <n>` | Drop sites with fewer than `n` samples with data |
+| `--max-alleles <n>` | Drop sites with more than `n` distinct alleles (`2` = biallelic) |
+| `--keep-samples <IDs>` | Keep only these samples (comma-separated, or `@file`) |
+| `--exclude-samples <IDs>` | Drop these samples (mutually exclusive with `--keep-samples`) |
+| `--mask <BED>` | Mask BED regions (excluded from output **and** `fconst`) |
+| `--mask-ref` | Interpret `--mask` coordinates as reference positions |
+
+!!! info "Filtering keeps ASC valid"
+    Per-site filters remove **variable** sites from the output only; they are never reclassified
+    as constant, so the `fconst` counts are untouched. Sample selection filters *before* the
+    scan, so `fconst` is recomputed for exactly the retained samples.
+
+## QC, reporting & robustness
+
+| Argument | Description |
+|---|---|
+| `--stats-json <FILE>` | Machine-readable JSON summary (`-` = stdout) |
+| `--dry-run` | Report statistics without writing any FASTA/VCF |
+| `--check` | Audit the alignment composition and exit |
+| `--on-invalid <MODE>` | `ignore` (default), `warn`, or `error` on out-of-alphabet bytes |
+| `--iupac-mode <MODE>` | `missing` (default) or `resolve` IUPAC codes to bases |
+| `--allow-dup-ids` | Permit duplicate sequence IDs instead of erroring |
+
+**Exit codes:** `0` success · `1` I/O error · `2` bad input/data.
 
 ## Examples
 
@@ -33,93 +77,42 @@ snpick [OPTIONS] --fasta <FASTA> --output <OUTPUT>
 snpick -f alignment.fasta -o snps.fasta
 ```
 
-**Input** (`alignment.fasta`):
-
-```text
->sequence1
-ATGCTAGCTAGCTAGCTA
->sequence2
-ATGCTAGCTGGCTAGCTA
->sequence3
-ATGCTAGCTAGCTAGCTA
-```
-
-**Output** (`snps.fasta`):
-
-```text
->sequence1
-A
->sequence2
-G
->sequence3
-A
-```
-
-**stderr:**
-
-```text
-[snpick] Mapped 63 bytes. 3 sequences × 18 positions.
-[snpick] 1 variable, 17 constant (A:4 C:4 G:4 T:5), 0 ambiguous-only, 18 total.
-[snpick] ASC fconst: 4,4,4,5
-[snpick] Done in 0.00s. 1 vars from 3 seqs × 18 pos.
-```
-
-### With a VCF
+### VCF with reference coordinates and a stats sidecar
 
 ```bash
-snpick -f alignment.fasta -o snps.fasta --vcf
-# or a custom path:
-snpick -f alignment.fasta -o snps.fasta --vcf-output variants.vcf
+snpick -f alignment.fasta.gz -o snps.fasta \
+       --vcf --chrom NC_000962.3 --reference H37Rv --ref-coords \
+       --stats-json stats.json    # (1)!
 ```
 
-See [Output formats](output.md) for the VCF layout.
+1. `--ref-coords` sets `POS` (and the contig length) to ungapped reference positions;
+   `--reference` pins REF polarity to H37Rv; `--stats-json` gives IQ-TREE the `fconst` array
+   without scraping stderr.
 
-### Set the VCF contig name
-
-By default the VCF `CHROM` and `##contig` are `1`. Match your reference so downstream tools
-(bcftools, GATK, IGV) line up without post-processing:
+### Filter and mask
 
 ```bash
-snpick -f alignment.fasta -o snps.fasta --vcf --chrom NC_000962.3 # (1)!
+# Drop singletons, keep biallelic sites, mask repetitive regions (reference coords)
+snpick -f alignment.fasta -o snps.fasta \
+       --mac 2 --max-alleles 2 --mask exclude.bed --mask-ref
 ```
 
-1. `--chrom` sets **both** the `##contig` header ID and the per-row `CHROM` column, and is
-   rejected if it contains whitespace (which would break the tab-delimited columns).
-
-### Include gaps
+### Subset samples
 
 ```bash
-snpick -f alignment.fasta -o snps.fasta -g
+snpick -f alignment.fasta -o clade.fasta --keep-samples @clade_ids.txt
 ```
 
-Without `-g`, gap columns never make a site variable. With `-g`, a gap is treated as a 5th
-allele (rendered as `*` in the VCF). See [Gaps & ambiguity](output.md#gaps-and-ambiguous-bases).
-
-### Control threads (HPC / reproducibility)
-
-The scan is parallelised with Rayon and, by default, uses every logical core. On a shared
-SLURM node, pin it to your allocation:
+### Alternative formats and piping
 
 ```bash
-snpick -f alignment.fasta -o snps.fasta -t 8
+snpick -f alignment.fasta -o snps.nex --format nexus
+gzip -dc big.fasta.gz | snpick -f - -o - --vcf-output snps.vcf > snps.fasta
 ```
 
-!!! note "Determinism"
-    The thread count **never changes the output** — the per-position bitmask is merged with a
-    commutative OR — only the wall-clock time.
-
-### Quiet mode for pipelines
+### Dry run and composition audit
 
 ```bash
-snpick -f alignment.fasta -o snps.fasta --vcf -q
+snpick -f alignment.fasta --dry-run --stats-json -   # stats only, JSON to stdout
+snpick -f alignment.fasta --check                    # composition breakdown, then exit
 ```
-
-All progress goes to **stderr** and `stdout` stays clean, so `-q` is only needed to silence the
-`[snpick]` chatter; errors are always printed.
-
-## Exit codes
-
-| Code | Meaning |
-|:---:|---|
-| `0` | Success (including the "no variable sites" case) |
-| `1` | Error — bad input, unequal sequence lengths, unwritable output, etc. |

@@ -19,6 +19,27 @@ phylogenetic tools while staying orders of magnitude smaller.
     If the alignment has no variable columns, SNPick writes a valid FASTA with each record's
     header and an empty sequence line, and exits `0`.
 
+### Alternative formats
+
+`--format` writes the reduced alignment as something other than FASTA:
+
+=== "PHYLIP"
+
+    ```bash
+    snpick -f alignment.fasta -o snps.phy --format phylip
+    ```
+
+    Relaxed PHYLIP (`ntax nchar` header, then `name  sequence`), read by IQ-TREE and RAxML.
+
+=== "NEXUS"
+
+    ```bash
+    snpick -f alignment.fasta -o snps.nex --format nexus
+    ```
+
+    A NEXUS `DATA` block (`DIMENSIONS` / `FORMAT DATATYPE=DNA` / `MATRIX`) for MrBayes, PAUP*
+    and SplitsTree.
+
 ## ASC `fconst` for ascertainment-bias correction
 
 Removing invariant sites biases branch lengths unless the model is told how many constant sites
@@ -54,16 +75,18 @@ site and per-sample genotypes.
 
 | Field | Meaning |
 |---|---|
-| `CHROM` | Contig name — `1` by default, override with [`--chrom`](usage.md#set-the-vcf-contig-name) |
-| `POS` | **1-based alignment column** (not an ungapped reference coordinate) |
+| `CHROM` | Contig name — `1` by default, override with [`--chrom`](usage.md#vcf-coordinates) |
+| `POS` | **1-based alignment column** by default, or the ungapped reference position with `--ref-coords` |
 | `REF` | Base of the first sequence; if that base is ambiguous, the first observed base in A, C, G, T order |
 | `ALT` | The other observed alleles, comma-separated |
 | `INFO=NS` | Number of samples with data (a called base; gaps count only under `-g`) |
 | `FORMAT=GT` | Per-sample allele index: `0` = REF, `1..` = the *n*-th ALT, `.` = missing/ambiguous |
 
-!!! warning "POS is an alignment coordinate"
-    `POS` is the column index in the alignment, so when the reference sequence contains gaps it
-    diverges from the true genomic position, and `##contig` length is the alignment length.
+!!! warning "POS is an alignment coordinate by default"
+    Without `--ref-coords`, `POS` is the column index in the alignment, so when the reference
+    contains gaps it diverges from the true genomic position and `##contig` length is the
+    alignment length. `--ref-coords` maps `POS` (and the contig length) onto ungapped reference
+    positions; `--reference <ID>` picks which sequence is that reference.
 
 ### Genotype matrix guard
 
@@ -89,3 +112,51 @@ declares the `.vcf` as an output does not break.
     Writing gaps as `*` is an alignment convention shared with snp-sites. Note that in strict
     VCF v4.2, `*` denotes a spanning deletion, so some downstream tools may interpret gap sites
     accordingly.
+
+With `--iupac-mode resolve`, IUPAC codes (R = A|G, …) are resolved to their bases when
+classifying, so a column that is all-A plus one `R` becomes variable. Resolution applies only to
+the presence scan; an `R` is still excluded from `NS` and genotyped as missing.
+
+## Machine-readable summary (`--stats-json`)
+
+`--stats-json <FILE>` (or `-` for stdout) writes a flat JSON run summary — so pipelines get the
+`fconst` array as a typed field instead of scraping the `[snpick] ASC fconst:` stderr line:
+
+```json
+{
+  "snpick_version": "1.0.2",
+  "input": "alignment.fasta",
+  "reference": "H37Rv",
+  "sequences": 250,
+  "alignment_length": 4411532,
+  "variable_sites": 158934,
+  "written_sites": 141002,
+  "constant_sites": 4252598,
+  "constant_by_base": { "A": 744123, "C": 1382922, "G": 1382180, "T": 743556 },
+  "ambiguous_sites": 0,
+  "fconst": [744123, 1382922, 1382180, 743556],
+  "include_gaps": false,
+  "threads": 8
+}
+```
+
+`variable_sites` is the classified count; `written_sites` is what remains after per-site
+filtering. Pair with `--dry-run` to compute the summary without writing any alignment.
+
+## Variable-site coordinate map (`--sites-output`)
+
+`--sites-output <TSV>` writes one row per variable site mapping its alignment column to the
+ungapped reference position and alleles — useful for cross-referencing gene coordinates or a
+masking BED:
+
+```text
+alignment_pos	ref_pos	ref	alt
+2	1	A	T
+8	7	C	A
+```
+
+## Composition audit (`--check`)
+
+`--check` prints an A/C/G/T, N, gap, IUPAC and invalid-byte breakdown, then exits — a quick
+pre-flight to catch a mis-supplied protein alignment or truncated download (see also
+`--on-invalid`).

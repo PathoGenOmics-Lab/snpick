@@ -51,6 +51,22 @@ tags:
         The release profile enables fat LTO and a single codegen unit for maximum throughput, so
         a release build takes noticeably longer than a debug build.
 
+=== ":material-docker: Container"
+
+    ```bash
+    docker run --rm -v "$PWD:/data" ghcr.io/pathogenomics-lab/snpick \
+      -f /data/alignment.fasta -o /data/snps.fasta
+    ```
+
+    An Apptainer/Singularity image is available too — see the
+    [`snpick.def`](https://github.com/PathoGenOmics-Lab/snpick/blob/main/snpick.def) recipe.
+
+## Library & bindings
+
+snpick is also a Rust **library crate** (these docs' API surface), with **Python**
+([maturin](https://www.maturin.rs)/[pyo3](https://pyo3.rs), under `bindings/python`) and
+**WebAssembly** (under `bindings/wasm`) bindings for notebooks, pipelines and the browser.
+
 ## Check the install
 
 ```bash

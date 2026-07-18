@@ -56,11 +56,18 @@ conda install -c bioconda snpick
 # Extract variable sites
 snpick -f alignment.fasta -o snps.fasta
 
-# With VCF output
-snpick -f alignment.fasta -o snps.fasta --vcf
+# With a VCF (reference-anchored POS) and a machine-readable summary
+snpick -f alignment.fasta.gz -o snps.fasta --vcf --chrom NC_000962.3 \
+       --ref-coords --stats-json stats.json
 
-# Include gaps as informative
-snpick -f alignment.fasta -o snps.fasta -g
+# Drop singletons, keep biallelic sites, mask repetitive regions
+snpick -f alignment.fasta -o snps.fasta --mac 2 --max-alleles 2 --mask exclude.bed
+
+# NEXUS output on 8 threads, quietly
+snpick -f alignment.fasta -o snps.nex --format nexus -t 8 -q
+
+# Just the statistics, no files written
+snpick -f alignment.fasta --dry-run --stats-json -
 ```
 
 ---
@@ -97,6 +104,44 @@ Optional VCF v4.2 output with per-sample genotypes. Reference allele taken from 
 
 Automatic multi-threaded scanning via Rayon when the dataset is large enough. Falls back to single-threaded for small inputs to avoid overhead. Cap the thread count with `-t/--threads` (e.g. to match a SLURM allocation); the thread count never changes the output, only the wall-clock time.
 
+### Per-site filtering
+
+Drop low-quality or uninformative sites in the same pass — no round-trip through `vcftools`:
+
+- `--max-missing <f>` — maximum fraction of missing genotypes per site
+- `--mac <n>` / `--maf <f>` — minimum minor-allele count / frequency (drop singletons, sequencing-error alleles)
+- `--min-samples <n>` — minimum samples with data
+- `--max-alleles <n>` — e.g. `2` keeps only biallelic sites
+
+Filtered sites are **variable** sites removed from the output only — they never re-enter `fconst`, so ASC stays valid.
+
+### Sample selection
+
+`--keep-samples` / `--exclude-samples` (comma-separated IDs or `@file`) subset the panel **before** the scan, so `fconst` and site classification are recomputed for exactly the retained samples — a site variable only because of a dropped outlier correctly becomes constant.
+
+### Region masking & reference coordinates
+
+- `--mask <BED>` excludes regions (PE/PPE, mobile elements, resistance genes) from both the output **and** `fconst`. `--mask-ref` reads the BED in reference coordinates.
+- `--reference <ID>` chooses the REF/polarity sequence (and the VCF `##reference`).
+- `--ref-coords` writes VCF `POS` as ungapped reference positions; `--sites-output <TSV>` maps each site's alignment column → reference position → REF/ALT.
+
+### Output formats
+
+`--format {fasta,phylip,nexus}` — FASTA (default), relaxed PHYLIP (IQ-TREE / RAxML) or a NEXUS DATA block (MrBayes / PAUP* / SplitsTree).
+
+### Compressed & streaming I/O
+
+Reads plain or **gzip/bgzip** FASTA transparently, from a file or **stdin** (`-f -`); writes the reduced FASTA to a file or **stdout** (`-o -`) for piping.
+
+### Machine-readable output & QC
+
+- `--stats-json <FILE>` (or `-` for stdout) — a typed JSON summary (counts + the `fconst` array), so pipelines never scrape stderr.
+- `--dry-run` — report statistics without writing any output.
+- `--check` — audit the alignment composition (A/C/G/T, N, gap, IUPAC, invalid fractions) and exit.
+- `--on-invalid {ignore,warn,error}` — guard against non-nucleotide input (e.g. a protein alignment).
+- `--iupac-mode resolve` — optionally resolve IUPAC codes (R = A|G, …) to their bases when classifying.
+- `-v`/`-vv` — extra diagnostics and an allele-class histogram.
+
 ---
 
 ## 💾 Installation
@@ -129,24 +174,73 @@ chmod +x snpick-linux-x86_64
 ./snpick-linux-x86_64 --help
 ```
 
+### Container
+
+```bash
+docker run --rm -v "$PWD:/data" ghcr.io/pathogenomics-lab/snpick \
+  -f /data/alignment.fasta -o /data/snps.fasta
+```
+
+Also available as an [Apptainer/Singularity](snpick.def) image.
+
+### Library & bindings
+
+snpick is also a Rust **library crate** ([docs](https://pathogenomics-lab.github.io/snpick/)), with **Python** (`bindings/python`, via [maturin](https://www.maturin.rs)) and **WebAssembly** (`bindings/wasm`) bindings for use in notebooks, pipelines and the browser.
+
 ---
 
 ## 🗃️ Usage
 
 ```
-snpick [OPTIONS] --fasta <FASTA> --output <OUTPUT>
+snpick [OPTIONS] --fasta <FASTA>
 ```
 
-| Argument | Required | Description |
-|---|---|---|
-| `-f, --fasta <FILE>` | ✅ | Input FASTA alignment |
-| `-o, --output <FILE>` | ✅ | Output FASTA (variable sites only) |
-| `-g, --include-gaps` | | Treat gaps (`-`) as a 5th character |
-| `--vcf` | | Generate VCF file (derived from output name) |
-| `--vcf-output <FILE>` | | Custom VCF output path |
-| `-t, --threads <N>` | | Threads for the parallel scan (default: all cores) |
-| `--chrom <NAME>` | | CHROM / contig name in the VCF (default: `1`) |
-| `-q, --quiet` | | Silence progress logs (errors still shown) |
+`-f/--fasta` is always required; `-o/--output` is required unless `--dry-run` or `--check`.
+Use `-` for `--fasta`/`--output`/`--stats-json` to read stdin / write stdout. See `snpick --help` for the authoritative list.
+
+**Core**
+
+| Argument | Description |
+|---|---|
+| `-f, --fasta <FILE>` | Input FASTA alignment (`-` = stdin; gzip/bgzip auto-detected) |
+| `-o, --output <FILE>` | Output FASTA of variable sites (`-` = stdout) |
+| `-g, --include-gaps` | Treat gaps (`-`) as a 5th character |
+| `--format <FMT>` | `fasta` (default), `phylip`, or `nexus` |
+| `-t, --threads <N>` | Threads for the parallel scan (default: all cores) |
+| `-q, --quiet` · `-v`/`-vv` | Silence logs · increase detail |
+
+**VCF & coordinates**
+
+| Argument | Description |
+|---|---|
+| `--vcf` · `--vcf-output <FILE>` | Write a VCF (derived name, or a custom path) |
+| `--chrom <NAME>` | CHROM / contig name (default `1`) |
+| `--reference <ID>` | REF/polarity sequence (default: first) |
+| `--ref-coords` | VCF `POS` as ungapped reference positions |
+| `--sites-output <TSV>` | Per-site alignment→reference coordinate map |
+
+**Filtering & masking**
+
+| Argument | Description |
+|---|---|
+| `--max-missing <f>` | Max fraction of missing genotypes per site |
+| `--mac <n>` · `--maf <f>` | Min minor-allele count / frequency |
+| `--min-samples <n>` | Min samples with data |
+| `--max-alleles <n>` | Max distinct alleles (`2` = biallelic) |
+| `--keep-samples` / `--exclude-samples <IDs>` | Subset samples (list or `@file`) |
+| `--mask <BED>` · `--mask-ref` | Mask regions (alignment or reference coords) |
+
+**QC, reporting & robustness**
+
+| Argument | Description |
+|---|---|
+| `--stats-json <FILE>` | Machine-readable JSON summary (`-` = stdout) |
+| `--dry-run` · `--check` | Stats only · composition audit, then exit |
+| `--on-invalid <MODE>` | `ignore` (default) · `warn` · `error` on non-nucleotides |
+| `--iupac-mode <MODE>` | `missing` (default) · `resolve` ambiguity codes |
+| `--allow-dup-ids` | Permit duplicate sequence IDs |
+
+**Exit codes:** `0` success · `1` I/O error · `2` bad input/data.
 
 ### Example
 

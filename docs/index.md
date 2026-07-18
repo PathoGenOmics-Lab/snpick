@@ -46,13 +46,29 @@ alignments ready for phylogenetic inference with ascertainment-bias correction (
 
     ---
 
-    VCF v4.2 with per-sample genotypes, a configurable contig name, and gap/ambiguity handling.
+    VCF v4.2 with per-sample genotypes, a configurable contig name, reference-anchored `POS`,
+    and gap/ambiguity handling.
+
+- :material-filter:{ .lg .middle } __Filter & mask__
+
+    ---
+
+    Per-site missingness / MAC / MAF / allele filters, BED region masking and sample
+    selection — without breaking `fconst`.
+
+- :material-pipe:{ .lg .middle } __Pipeline-native__
+
+    ---
+
+    gzip & stdin/stdout streaming, PHYLIP/NEXUS output, and a `--stats-json` sidecar so nothing
+    scrapes stderr.
 
 - :material-lightning-bolt:{ .lg .middle } __Built for scale__
 
     ---
 
-    Zero-copy mmap + parallel scan: **O(L)** memory, thousands of genomes in seconds.
+    Zero-copy mmap + parallel, auto-vectorized scan: **O(L)** memory, thousands of genomes in
+    seconds.
 
 </div>
 

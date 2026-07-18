@@ -28,5 +28,5 @@ SNPick maintains **O(L)** memory regardless of sequence count, while snp-sites r
 | 1000 seqs × 4.4 Mbp | **~3 s**, ~140 MB | >26 min (killed), 3+ GB |
 
 !!! tip "Reproducing"
-    Wall-clock depends on core count; pin it with [`--threads`](usage.md#control-threads-hpc-reproducibility)
+    Wall-clock depends on core count; pin it with [`--threads`](usage.md#core)
     for comparable runs. The extracted sites and VCF are identical regardless of thread count.

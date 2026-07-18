@@ -7,14 +7,43 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [1.0.2] - 2026-07-18
 
 ### Added
-- `-t, --threads <N>` to pin the Rayon thread pool (deterministic wall-clock on
-  shared HPC/SLURM nodes). Thread count never changes the output, only speed.
-- `--chrom <NAME>` to set the VCF `CHROM` / `##contig` name (default `1`, e.g.
-  `NC_000962.3`).
-- `-q, --quiet` to silence the `[snpick]` progress logs (errors still print).
-- A valid header-only VCF is now written when `--vcf` is requested but the
-  alignment has no variable sites, so pipelines that declare the `.vcf` as an
-  output no longer break.
+
+**Filtering & selection**
+- Per-site filtering: `--max-missing`, `--mac`, `--maf`, `--min-samples`,
+  `--max-alleles`. Filtered sites stay variable (never re-enter `fconst`), so ASC
+  correction remains valid.
+- `--keep-samples` / `--exclude-samples` (comma-separated IDs or `@file`) subset
+  the panel before the scan, so `fconst` is recomputed for the retained samples.
+- `--mask <BED>` (and `--mask-ref`) excludes regions from both the output and `fconst`.
+
+**Coordinates & references**
+- `--reference <ID>` chooses the REF/polarity sequence and the VCF `##reference`.
+- `--ref-coords` writes VCF `POS` as ungapped reference positions.
+- `--sites-output <TSV>` maps each site's alignment column to its reference position.
+
+**I/O & formats**
+- Transparent gzip/bgzip input, plus stdin (`-f -`) and stdout (`-o -`) streaming.
+- `--format {fasta,phylip,nexus}` for the reduced alignment.
+- `--stats-json <FILE>` (or `-`) writes a typed JSON run summary with the `fconst` array.
+
+**Robustness & QC**
+- `--dry-run` (stats only) and `--check` (composition audit) exit without writing.
+- `--on-invalid {ignore,warn,error}` guards against non-nucleotide input.
+- `--iupac-mode resolve` optionally resolves IUPAC codes to their bases.
+- Empty/duplicate sequence IDs are rejected (`--allow-dup-ids` to permit).
+- `-v`/`-vv` diagnostics; distinct exit codes (`2` bad input, `1` I/O).
+
+**Threading & VCF**
+- `-t, --threads <N>` pins the Rayon thread pool (deterministic wall-clock; output
+  is unaffected by thread count).
+- `--chrom <NAME>` sets the VCF `CHROM` / `##contig` name (default `1`).
+- `-q, --quiet` silences the `[snpick]` progress logs (errors still print).
+- A valid header-only VCF is written when `--vcf` is requested but there are no
+  variable sites, so pipelines declaring the `.vcf` output no longer break.
+
+**Packaging**
+- Published as a reusable Rust library crate, with Python (pyo3/maturin) and
+  WebAssembly bindings, and Docker/Apptainer container recipes.
 
 ### Fixed
 - Silent SNP loss when a single-line FASTA record contained a blank line: such
