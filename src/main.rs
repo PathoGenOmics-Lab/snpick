@@ -37,6 +37,9 @@ struct Args {
     /// Number of threads for the parallel scan (default: all logical cores).
     #[arg(short = 't', long, value_parser = parse_threads)]
     threads: Option<usize>,
+    /// CHROM / contig name written to the VCF (e.g. NC_000962.3).
+    #[arg(long, default_value = "1")]
+    chrom: String,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -100,6 +103,12 @@ fn run() -> io::Result<()> {
     let upper = build_upper();
 
     let do_vcf = args.vcf || args.vcf_output.is_some();
+
+    // A CHROM with whitespace would break the tab-delimited VCF columns.
+    if do_vcf && (args.chrom.is_empty() || args.chrom.bytes().any(|b| b.is_ascii_whitespace())) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "--chrom must be non-empty and contain no whitespace."));
+    }
 
     // Validate paths
     check_paths_differ(&args.fasta, &args.output)?;
@@ -189,7 +198,7 @@ fn run() -> io::Result<()> {
 
     // Write VCF
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
-        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length)?;
+        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom)?;
         eprintln!("[snpick] VCF written to {}.", vp);
     }
 
@@ -285,7 +294,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -306,7 +315,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -328,7 +337,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -352,7 +361,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -467,7 +476,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl).unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
         let c = std::fs::read_to_string(fo).unwrap();
         let l: Vec<&str> = c.lines().collect();
         assert_eq!(l[1], "AG"); assert_eq!(l[3], "AC"); assert_eq!(l[5], "CG");

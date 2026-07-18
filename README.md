@@ -83,7 +83,7 @@ iqtree2 -s snps.fasta -m GTR+ASC -fconst 744123,1382922,1382180,743556
 
 ### VCF generation
 
-Optional VCF v4.2 output with per-sample genotypes. Reference allele taken from the first sequence. Ambiguous bases reported as missing (`.`).
+Optional VCF v4.2 output with per-sample genotypes. Reference allele taken from the first sequence. Ambiguous bases reported as missing (`.`). `POS` is the 1-based alignment column (not an ungapped reference coordinate) and `CHROM` defaults to `1` — set it with `--chrom` (e.g. `NC_000962.3`) to match your reference.
 
 ### IUPAC and gap handling
 
@@ -138,6 +138,7 @@ snpick [OPTIONS] --fasta <FASTA> --output <OUTPUT>
 | `--vcf` | | Generate VCF file (derived from output name) |
 | `--vcf-output <FILE>` | | Custom VCF output path |
 | `-t, --threads <N>` | | Threads for the parallel scan (default: all cores) |
+| `--chrom <NAME>` | | CHROM / contig name in the VCF (default: `1`) |
 
 ### Example
 

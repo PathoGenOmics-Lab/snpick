@@ -12,7 +12,7 @@ use crate::types::{VariablePosition, IO_BUF};
 /// Write VCF output from genotype matrix and variable positions.
 pub fn write_vcf(
     vcf_geno: &[u8], num_samples: usize, var_positions: &[VariablePosition],
-    vcf_path: &str, records: &[FastaRecord], seq_length: usize,
+    vcf_path: &str, records: &[FastaRecord], seq_length: usize, chrom: &str,
 ) -> io::Result<()> {
     let out = File::create(vcf_path).map_err(|e| io::Error::new(e.kind(),
         format!("Cannot create VCF '{}': {}", vcf_path, e)))?;
@@ -22,7 +22,7 @@ pub fn write_vcf(
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=snpick v{}", env!("CARGO_PKG_VERSION"))?;
     writeln!(w, "##reference=first_sequence")?;
-    writeln!(w, "##contig=<ID=1,length={}>", seq_length)?;
+    writeln!(w, "##contig=<ID={},length={}>", chrom, seq_length)?;
     writeln!(w, "##INFO=<ID=NS,Number=1,Type=Integer,Description=\"Number of Samples With Data\">")?;
     writeln!(w, "##FORMAT=<ID=GT,Number=1,Type=String,Description=\"Genotype\">")?;
     write!(w, "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT")?;
@@ -57,7 +57,7 @@ pub fn write_vcf(
         let ref_byte = if vp.ref_base == b'-' { b'*' } else { vp.ref_base };
 
         row.clear();
-        write!(row, "1\t{}\t.\t", vp.index + 1)?;
+        write!(row, "{}\t{}\t.\t", chrom, vp.index + 1)?;
         row.push(ref_byte);
         row.push(b'\t');
         row.extend_from_slice(&alt);
