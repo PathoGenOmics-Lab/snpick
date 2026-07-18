@@ -9,6 +9,17 @@ use std::io::{self, BufWriter, Write};
 use crate::fasta::FastaRecord;
 use crate::types::*;
 
+/// Open an output sink: a file, or stdout when the path is "-".
+pub fn open_sink(path: &str) -> io::Result<Box<dyn Write>> {
+    if path == "-" {
+        Ok(Box::new(io::stdout().lock()))
+    } else {
+        let f = File::create(path).map_err(|e| io::Error::new(e.kind(),
+            format!("Cannot create output '{}': {}", path, e)))?;
+        Ok(Box::new(f))
+    }
+}
+
 /// Parameters for variable site extraction (pass 2).
 pub struct ExtractParams<'a> {
     pub records: &'a [FastaRecord<'a>],
@@ -35,9 +46,7 @@ pub fn pass2_extract(
     let num_samples = records.len();
     let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
 
-    let out_file = File::create(output).map_err(|e| io::Error::new(e.kind(),
-        format!("Cannot create output '{}': {}", output, e)))?;
-    let mut writer = BufWriter::with_capacity(IO_BUF, out_file);
+    let mut writer = BufWriter::with_capacity(IO_BUF, open_sink(output)?);
 
     let mut vcf_geno: Vec<u8> = if collect_vcf { vec![0u8; num_var * num_samples] } else { Vec::new() };
     let mut ns_counts: Vec<usize> = if collect_vcf { vec![0usize; num_var] } else { Vec::new() };

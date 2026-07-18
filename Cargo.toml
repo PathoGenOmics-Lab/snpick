@@ -21,6 +21,8 @@ exclude = ["benchmarks/", "docs/", "logo/", "site/", ".github/"]
 clap = { version = "4.5.21", features = ["derive"] }
 memmap2 = "0.9.10"
 rayon = "1.11.0"
+# Pure-Rust (miniz_oxide) backend keeps the build C-toolchain-free for Bioconda.
+flate2 = "1.0"
 
 [profile.release]
 opt-level = 3

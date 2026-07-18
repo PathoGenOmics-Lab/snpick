@@ -3,12 +3,12 @@ mod coords;
 mod extract;
 mod fasta;
 mod filter;
+mod input;
 mod scan;
 mod types;
 mod vcf;
 
 use clap::Parser;
-use memmap2::Mmap;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
@@ -167,6 +167,9 @@ fn resolve_path(p: &str) -> io::Result<std::path::PathBuf> {
 }
 
 fn check_paths_differ(a: &str, b: &str) -> io::Result<()> {
+    if a == "-" || b == "-" {
+        return Ok(()); // stdin/stdout can't collide with a file
+    }
     let pa = resolve_path(a)?;
     let pb = resolve_path(b)?;
     if pa == pb {
@@ -353,19 +356,15 @@ fn run() -> io::Result<()> {
         Some(vp)
     } else { None };
 
-    // Memory-map input
-    let file = File::open(&args.fasta).map_err(|e| io::Error::new(e.kind(),
-        format!("Cannot open '{}': {}", args.fasta, e)))?;
-    let file_len = file.metadata()?.len();
-    if file_len == 0 {
+    // Map the input, transparently decompressing gzip/bgzip and reading stdin ("-") as needed.
+    let input = input::map_input(&args.fasta)?;
+    if input.mmap.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidData,
-            format!("Input file '{}' is empty (0 bytes).", args.fasta)));
+            format!("Input '{}' is empty (0 bytes).", args.fasta)));
     }
-    let mmap = unsafe { Mmap::map(&file).map_err(|e| io::Error::new(e.kind(),
-        format!("Cannot memory-map '{}': {}", args.fasta, e)))? };
     // Hint: pass 1 reads sequentially; OS can prefetch and release pages eagerly
-    mmap.advise(memmap2::Advice::Sequential).ok();
-    let data = &mmap[..];
+    input.mmap.advise(memmap2::Advice::Sequential).ok();
+    let data = &input.mmap[..];
 
     // Index records
     let (mut records, seq_length, layout) = index_fasta(data)?;
@@ -490,8 +489,7 @@ fn run() -> io::Result<()> {
     // Handle zero-variant case
     if num_var == 0 {
         progress!(quiet, "[snpick] No variable positions — writing empty output.");
-        let outf = File::create(out)?;
-        let mut w = BufWriter::new(outf);
+        let mut w = BufWriter::new(crate::extract::open_sink(out)?);
         for rec in &records {
             w.write_all(b">")?;
             w.write_all(rec.id)?;
@@ -552,6 +550,7 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memmap2::Mmap;
     use crate::extract::ExtractParams;
     use crate::fasta::{get_ref_seq, index_fasta};
     use crate::scan::{analyze, pass1_scan};
