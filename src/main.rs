@@ -100,6 +100,10 @@ struct Args {
     #[arg(long)] mask: Option<String>,
     /// Interpret --mask coordinates as reference positions, not alignment columns.
     #[arg(long, requires = "mask")] mask_ref: bool,
+    /// Use ungapped reference positions for VCF POS instead of the alignment column.
+    #[arg(long)] ref_coords: bool,
+    /// Write a TSV mapping each variable site (alignment_pos, ref_pos, ref, alt) to this path.
+    #[arg(long)] sites_output: Option<String>,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -239,6 +243,23 @@ fn apply_sample_filter(
     Ok(())
 }
 
+/// Write a TSV mapping each variable site to its alignment column, reference position,
+/// REF and ALT alleles (gaps rendered as '*').
+fn write_sites_tsv(path: &str, var: &[VariablePosition], ref_pos: Option<&[u32]>) -> io::Result<()> {
+    let mut w = BufWriter::new(File::create(path).map_err(|e| io::Error::new(e.kind(),
+        format!("Cannot create sites TSV '{}': {}", path, e)))?);
+    writeln!(w, "alignment_pos\tref_pos\tref\talt")?;
+    for vp in var {
+        let rp = ref_pos.map(|r| r[vp.index]).unwrap_or((vp.index + 1) as u32);
+        let refc = if vp.ref_base == b'-' { '*' } else { vp.ref_base as char };
+        let alt: String = vp.alt_bases.iter()
+            .map(|&b| if b == b'-' { "*".to_string() } else { (b as char).to_string() })
+            .collect::<Vec<_>>().join(",");
+        writeln!(w, "{}\t{}\t{}\t{}", vp.index + 1, rp, refc, alt)?;
+    }
+    w.flush()
+}
+
 /// Index of the record to use as the REF/polarity reference.
 fn reference_index(records: &[FastaRecord], reference: &Option<String>) -> io::Result<usize> {
     match reference {
@@ -336,12 +357,20 @@ fn run() -> io::Result<()> {
     let ref_seq = get_ref_seq(data, &records[ref_idx], seq_length, layout);
     let t1 = start.elapsed().as_secs_f64();
 
+    // Ungapped reference positions (only computed when a feature needs them).
+    let ref_pos: Option<Vec<u32>> =
+        if args.ref_coords || args.sites_output.is_some() || args.mask_ref {
+            Some(coords::ref_positions(&ref_seq))
+        } else {
+            None
+        };
+
     // Mask out BED regions before classification: masked columns are zeroed, so they classify
     // as ambiguous and never enter the output or the fconst constant counts.
     if let Some(bed) = &args.mask {
         let ivs = coords::parse_bed(bed)?;
-        let ref_pos = if args.mask_ref { Some(coords::ref_positions(&ref_seq)) } else { None };
-        let mask = coords::build_mask(&ivs, seq_length, ref_pos.as_deref());
+        let rc = if args.mask_ref { ref_pos.as_deref() } else { None };
+        let mask = coords::build_mask(&ivs, seq_length, rc);
         let masked = mask.iter().filter(|&&m| m).count();
         for (col, &m) in mask.iter().enumerate() {
             if m { bitmask[col] = 0; }
@@ -397,6 +426,13 @@ fn run() -> io::Result<()> {
 
     // Past the dry-run gate, an output path is guaranteed (clap-enforced).
     let out = out_path.as_deref().expect("output is required unless --dry-run");
+    let pos_map = if args.ref_coords { ref_pos.as_deref() } else { None };
+
+    // Optional variable-site coordinate map (alignment column -> reference position).
+    if let Some(sp) = &args.sites_output {
+        write_sites_tsv(sp, &var_positions, ref_pos.as_deref())?;
+        progress!(quiet, "[snpick] Sites TSV written to {}.", sp);
+    }
 
     // Handle zero-variant case
     if num_var == 0 {
@@ -413,7 +449,7 @@ fn run() -> io::Result<()> {
         // Still honour a requested VCF: emit a valid header-only file so a
         // pipeline that declares the .vcf as an output doesn't break.
         if let Some(ref vp) = vcf_path {
-            write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom, &ref_name)?;
+            write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom, &ref_name, pos_map)?;
             progress!(quiet, "[snpick] VCF written to {} (header only — no variable sites).", vp);
         }
         return Ok(());
@@ -440,7 +476,7 @@ fn run() -> io::Result<()> {
 
     // Write VCF
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
-        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom, &ref_name)?;
+        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom, &ref_name, pos_map)?;
         progress!(quiet, "[snpick] VCF written to {}.", vp);
     }
 
@@ -536,7 +572,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -557,7 +593,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -579,7 +615,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -603,7 +639,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -620,7 +656,7 @@ mod tests {
         let vo = "/tmp/snpick_t_hdr.vcf";
         let m = setup(&p);
         let (recs, sl, _layout) = index_fasta(&m).unwrap();
-        write_vcf(&[], recs.len(), &[], vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&[], recs.len(), &[], vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let data: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         assert_eq!(data.len(), 0);
@@ -842,7 +878,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(fo).unwrap();
         let l: Vec<&str> = c.lines().collect();
         assert_eq!(l[1], "AG"); assert_eq!(l[3], "AC"); assert_eq!(l[5], "CG");
@@ -994,7 +1030,7 @@ mod tests {
         assert_eq!(v[0].alt_bases, vec![b'C']);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", None).unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
