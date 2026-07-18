@@ -60,3 +60,14 @@
 [data-md-color-scheme="slate"] .md-typeset .snpick-yes {
   color: var(--snpick-alt);
 }
+
+/* Larger brand logo in the header */
+.md-header__button.md-logo {
+  padding: 0.1rem 0.2rem;
+}
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg {
+  height: 2.1rem;
+  width: auto;
+}
+
