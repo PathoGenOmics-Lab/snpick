@@ -34,6 +34,19 @@ struct Args {
     #[arg(short = 'g', long)] include_gaps: bool,
     #[arg(long)] vcf: bool,
     #[arg(long)] vcf_output: Option<String>,
+    /// Number of threads for the parallel scan (default: all logical cores).
+    #[arg(short = 't', long, value_parser = parse_threads)]
+    threads: Option<usize>,
+}
+
+/// Parse a positive thread count (Rayon treats 0 as "use default", which would
+/// be a confusing silent no-op, so reject it explicitly).
+fn parse_threads(s: &str) -> Result<usize, String> {
+    let n: usize = s.parse().map_err(|_| format!("'{}' is not a valid thread count", s))?;
+    if n == 0 {
+        return Err("thread count must be at least 1".to_string());
+    }
+    Ok(n)
 }
 
 // =============================================================================
@@ -73,6 +86,15 @@ fn check_paths_differ(a: &str, b: &str) -> io::Result<()> {
 
 fn run() -> io::Result<()> {
     let args = Args::parse();
+
+    // Configure the Rayon pool up front. Absent, Rayon uses all logical cores;
+    // pinning it keeps wall-clock deterministic on shared HPC/SLURM nodes.
+    if let Some(n) = args.threads {
+        rayon::ThreadPoolBuilder::new().num_threads(n).build_global().map_err(|e| {
+            io::Error::other(format!("Cannot configure {} thread(s): {}", n, e))
+        })?;
+    }
+
     let start = Instant::now();
     let lookup = build_lookup(args.include_gaps);
     let upper = build_upper();

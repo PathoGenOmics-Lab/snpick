@@ -92,7 +92,7 @@ Optional VCF v4.2 output with per-sample genotypes. Reference allele taken from 
 
 ### Parallel processing
 
-Automatic multi-threaded scanning via Rayon when the dataset is large enough. Falls back to single-threaded for small inputs to avoid overhead.
+Automatic multi-threaded scanning via Rayon when the dataset is large enough. Falls back to single-threaded for small inputs to avoid overhead. Cap the thread count with `-t/--threads` (e.g. to match a SLURM allocation); the thread count never changes the output, only the wall-clock time.
 
 ---
 
@@ -137,6 +137,7 @@ snpick [OPTIONS] --fasta <FASTA> --output <OUTPUT>
 | `-g, --include-gaps` | | Treat gaps (`-`) as a 5th character |
 | `--vcf` | | Generate VCF file (derived from output name) |
 | `--vcf-output <FILE>` | | Custom VCF output path |
+| `-t, --threads <N>` | | Threads for the parallel scan (default: all cores) |
 
 ### Example
 
