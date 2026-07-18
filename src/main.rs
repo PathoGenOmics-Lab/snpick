@@ -644,6 +644,83 @@ mod tests {
         std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
     }
 
+    #[test] fn test_ambiguous_ref_base() {
+        // Reference (first sequence) is N at a variable site: REF falls back to
+        // the first observed base in A,C,G,T order and the ref genotype is '.'.
+        let p = tmp("nref", ">ref\nNTGC\n>s1\nATGC\n>s2\nCTGC\n");
+        let fo = "/tmp/snpick_t_nref_out.fa"; let vo = "/tmp/snpick_t_nref.vcf";
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].ref_base, b'A');
+        assert_eq!(v[0].alt_bases, vec![b'C']);
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
+        let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        let c = std::fs::read_to_string(vo).unwrap();
+        let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
+        let f: Vec<&str> = dl[0].split('\t').collect();
+        assert_eq!(f[3], "A");        // REF fallback
+        assert_eq!(f[4], "C");        // ALT
+        assert_eq!(f[7], "NS=2");     // ref N excluded
+        assert_eq!(f[9], ".");        // ref sample genotype missing
+        assert_eq!(f[10], "0");       // s1 = A = ref
+        assert_eq!(f[11], "1");       // s2 = C = alt
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
+    }
+
+    #[test] fn test_lowercase_normalization() {
+        // Soft-masked (lowercase) input classifies case-insensitively and is
+        // written uppercase in the reduced FASTA.
+        let p = tmp("lower", ">ref\natgc\n>s1\natgt\n");
+        let o = "/tmp/snpick_t_lower_out.fa";
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].index, 3);
+        let ep = ExtractParams { records: &recs, output: o, collect_vcf: false, lookup: &lk, upper: &up, layout };
+        pass2_extract(&m, &mut v, &ep).unwrap();
+        let c = std::fs::read_to_string(o).unwrap();
+        let l: Vec<&str> = c.lines().collect();
+        assert_eq!(l[1], "C"); assert_eq!(l[3], "T");
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(o).ok();
+    }
+
+    #[test] fn test_inconsistent_length_error() {
+        // Sequences of differing lengths are a malformed alignment → error.
+        let p = tmp("badlen", ">s1\nATGC\n>s2\nATG\n");
+        let m = setup(&p);
+        assert!(index_fasta(&m).is_err());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_crlf_single_line() {
+        // CRLF line endings on single-line sequences use the fast path.
+        let p = tmp("crlf1", "");
+        std::fs::write(&p, b">s1\r\nATGC\r\n>s2\r\nATCC\r\n").unwrap();
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        assert_eq!(sl, 4);
+        assert!(layout.single_line);
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v, _) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].index, 2);
+        std::fs::remove_file(&p).ok();
+    }
+
     #[test] fn test_empty() {
         let p = tmp("empg", "");
         let m = setup(&p);
