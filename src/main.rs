@@ -79,6 +79,10 @@ struct Args {
     #[arg(long)] stats_json: Option<String>,
     /// Report site statistics without writing any FASTA/VCF output.
     #[arg(long)] dry_run: bool,
+    /// Keep only these sample IDs (comma-separated, or @file with one ID per line).
+    #[arg(long)] keep_samples: Option<String>,
+    /// Drop these sample IDs (comma-separated, or @file). Excludes --keep-samples.
+    #[arg(long, conflicts_with = "keep_samples")] exclude_samples: Option<String>,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -168,6 +172,55 @@ fn write_stats_json(
     }
 }
 
+/// Parse a sample-ID selector: a comma-separated list, or `@path` to read one ID per line
+/// (blank lines and `#` comments ignored).
+fn parse_id_set(spec: &str) -> io::Result<HashSet<Vec<u8>>> {
+    let mut set = HashSet::new();
+    if let Some(path) = spec.strip_prefix('@') {
+        let content = std::fs::read_to_string(path).map_err(|e| io::Error::new(e.kind(),
+            format!("Cannot read sample list '{}': {}", path, e)))?;
+        for line in content.lines() {
+            let line = line.trim();
+            if !line.is_empty() && !line.starts_with('#') {
+                set.insert(line.as_bytes().to_vec());
+            }
+        }
+    } else {
+        for id in spec.split(',') {
+            let id = id.trim();
+            if !id.is_empty() { set.insert(id.as_bytes().to_vec()); }
+        }
+    }
+    Ok(set)
+}
+
+/// Apply --keep-samples / --exclude-samples in place. Filtering happens before the scan, so
+/// site classification and fconst are computed for exactly the retained samples. Unknown IDs
+/// are an error (catches typos).
+fn apply_sample_filter(
+    records: &mut Vec<FastaRecord>, keep: &Option<String>, exclude: &Option<String>,
+) -> io::Result<()> {
+    let (spec, keeping) = match (keep, exclude) {
+        (Some(s), _) => (s, true),
+        (_, Some(s)) => (s, false),
+        _ => return Ok(()),
+    };
+    let set = parse_id_set(spec)?;
+    let present: HashSet<&[u8]> = records.iter().map(|r| r.id).collect();
+    for id in &set {
+        if !present.contains(id.as_slice()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                format!("Sample '{}' not found in the alignment.", String::from_utf8_lossy(id))));
+        }
+    }
+    records.retain(|r| set.contains(r.id) == keeping);
+    if records.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "No sequences remain after sample filtering."));
+    }
+    Ok(())
+}
+
 /// Index of the record to use as the REF/polarity reference.
 fn reference_index(records: &[FastaRecord], reference: &Option<String>) -> io::Result<usize> {
     match reference {
@@ -247,10 +300,12 @@ fn run() -> io::Result<()> {
     let data = &mmap[..];
 
     // Index records
-    let (records, seq_length, layout) = index_fasta(data)?;
-    let num_samples = records.len();
+    let (mut records, seq_length, layout) = index_fasta(data)?;
 
     validate_ids(&records, args.allow_dup_ids)?;
+    apply_sample_filter(&mut records, &args.keep_samples, &args.exclude_samples)?;
+    let num_samples = records.len();
+
     let ref_idx = reference_index(&records, &args.reference)?;
     let ref_name = std::str::from_utf8(records[ref_idx].id).unwrap_or("reference").to_string();
 
@@ -578,6 +633,41 @@ mod tests {
         assert!(c.contains("\"reference\": \"H37Rv\""));
         assert!(c.contains("\"sequences\": 6"));
         std::fs::remove_file(p).ok();
+    }
+
+    #[test] fn test_exclude_samples_reclassifies() {
+        // A site variable only because of one sample becomes constant (and enters
+        // fconst) once that sample is excluded — the correctness snp-sites misses.
+        let p = tmp("excl", ">a\nAA\n>b\nAA\n>c\nAT\n");
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let (mut recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v, sc) = analyze(&bm, &rs, &lk, false);
+        assert_eq!(v.len(), 1);
+        assert_eq!(sc.constant.total(), 1);
+        apply_sample_filter(&mut recs, &None, &Some("c".to_string())).unwrap();
+        assert_eq!(recs.len(), 2);
+        let bm2 = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs2 = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v2, sc2) = analyze(&bm2, &rs2, &lk, false);
+        assert_eq!(v2.len(), 0);
+        assert_eq!(sc2.constant.total(), 2);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_keep_samples_and_unknown() {
+        let p = tmp("keep", ">a\nAT\n>b\nCT\n>c\nGT\n");
+        let m = setup(&p);
+        let (mut recs, _, _) = index_fasta(&m).unwrap();
+        apply_sample_filter(&mut recs, &Some("a,c".to_string()), &None).unwrap();
+        assert_eq!(recs.len(), 2);
+        assert_eq!(recs[0].id, b"a");
+        assert_eq!(recs[1].id, b"c");
+        let (mut recs2, _, _) = index_fasta(&m).unwrap();
+        assert!(apply_sample_filter(&mut recs2, &Some("a,zzz".to_string()), &None).is_err());
+        std::fs::remove_file(&p).ok();
     }
 
     #[test] fn test_reference_index() {
