@@ -15,3 +15,8 @@ fuzz/target/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/Cargo.lock
+
+# binding crates
+bindings/*/target/
+bindings/*/Cargo.lock
+bindings/wasm/pkg/

@@ -1,0 +1,22 @@
+[package]
+name = "snpick-wasm"
+version = "1.0.2"
+edition = "2021"
+publish = false
+description = "WebAssembly bindings for snpick"
+license = "GPL-3.0-or-later"
+
+# Own workspace so it does not affect the parent crate's build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+# The library builds without rayon/memmap for wasm (no threads, no mmap).
+snpick_core = { path = "../..", package = "snpick", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true

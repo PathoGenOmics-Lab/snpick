@@ -36,6 +36,7 @@ pub mod coords;
 pub mod extract;
 pub mod fasta;
 pub mod filter;
+#[cfg(feature = "mmap")]
 pub mod input;
 pub mod scan;
 pub mod types;

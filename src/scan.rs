@@ -3,6 +3,7 @@
 //! Builds a per-position bitmask by OR-ing each sequence's nucleotide flags,
 //! then classifies positions as variable (>1 allele), constant, or ambiguous.
 
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::fasta::FastaRecord;
@@ -10,6 +11,7 @@ use crate::types::*;
 
 /// Minimum total scan work (records × positions) before the parallel path is
 /// worth its overhead — roughly 50 seqs × 4M bp.
+#[cfg(feature = "parallel")]
 const PARALLEL_MIN_WORK: usize = 200_000_000;
 
 /// Prefault mmap pages by touching one byte per OS page. Eliminates soft page faults during
@@ -20,18 +22,17 @@ fn prefault(data: &[u8]) {
     const PAGE: usize = 4096;
     let n = data.len();
     let num_pages = n.div_ceil(PAGE);
+    #[cfg(feature = "parallel")]
     let sum: u8 = if n >= 256 * 1024 * 1024 {
         (0..num_pages)
             .into_par_iter()
             .map(|p| data[p * PAGE])
             .reduce(|| 0u8, |a, b| a.wrapping_add(b))
     } else {
-        let mut s = 0u8;
-        for p in 0..num_pages {
-            s = s.wrapping_add(data[p * PAGE]);
-        }
-        s
+        (0..num_pages).fold(0u8, |s, p| s.wrapping_add(data[p * PAGE]))
     };
+    #[cfg(not(feature = "parallel"))]
+    let sum: u8 = (0..num_pages).fold(0u8, |s, p| s.wrapping_add(data[p * PAGE]));
     std::hint::black_box(sum);
 }
 
@@ -47,23 +48,26 @@ pub fn pass1_scan(
     // Prefault all pages into RAM before the hot loop
     prefault(data);
 
-    // Parallelism only pays off when there's enough work per thread
-    // (~200M bases, e.g. 50 seqs × 4M bp). Small inputs scan sequentially.
-    let num_threads = rayon::current_num_threads().min(records.len());
-    let total_work = records.len() * seq_length;
-    if num_threads <= 1 || total_work < PARALLEL_MIN_WORK {
-        let mut bitmask = vec![0u8; seq_length];
-        scan_sequential(data, records, seq_length, layout, lookup, &mut bitmask);
-        bitmask
-    } else {
-        scan_parallel(data, records, seq_length, layout, lookup, num_threads)
+    // Parallelism only pays off when there's enough work per thread (~200M bases). Small
+    // inputs (and builds without the `parallel` feature, e.g. wasm) scan sequentially.
+    #[cfg(feature = "parallel")]
+    {
+        let num_threads = rayon::current_num_threads().min(records.len());
+        let total_work = records.len() * seq_length;
+        if num_threads > 1 && total_work >= PARALLEL_MIN_WORK {
+            return scan_parallel(data, records, seq_length, layout, lookup, num_threads);
+        }
     }
+    let mut bitmask = vec![0u8; seq_length];
+    scan_sequential(data, records, seq_length, layout, lookup, &mut bitmask);
+    bitmask
 }
 
 /// Parallel scan: each thread scans a disjoint chunk of records into its own
 /// bitmask, then all partials are merged with OR. OR is commutative and
 /// associative over the disjoint chunks, so the result is byte-for-byte
 /// identical to a sequential scan.
+#[cfg(feature = "parallel")]
 fn scan_parallel(
     data: &[u8], records: &[FastaRecord], seq_length: usize,
     layout: SeqLayout, lookup: &[u8; 256], num_threads: usize,
@@ -190,6 +194,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "parallel")]
     #[test]
     fn parallel_matches_sequential() {
         // The parallel chunk/merge path is the production path for real
