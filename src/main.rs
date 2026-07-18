@@ -175,6 +175,12 @@ fn run() -> io::Result<()> {
             writeln!(w)?; writeln!(w)?;
         }
         w.flush()?;
+        // Still honour a requested VCF: emit a valid header-only file so a
+        // pipeline that declares the .vcf as an output doesn't break.
+        if let Some(ref vp) = vcf_path {
+            write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom)?;
+            eprintln!("[snpick] VCF written to {} (header only — no variable sites).", vp);
+        }
         return Ok(());
     }
 
@@ -369,6 +375,21 @@ mod tests {
         assert_eq!(f[3], "A");            // REF
         assert_eq!(f[4], "T,*");          // ALT: gap sample → '*'
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
+    }
+
+    #[test] fn test_vcf_header_only() {
+        // Zero variable sites but VCF requested: a valid header-only VCF that
+        // still lists every sample, so downstream pipelines find the file.
+        let p = tmp("hdr", ">s1\nATGC\n>s2\nATGC\n");
+        let vo = "/tmp/snpick_t_hdr.vcf";
+        let m = setup(&p);
+        let (recs, sl, _layout) = index_fasta(&m).unwrap();
+        write_vcf(&[], recs.len(), &[], vo, &recs, sl, "1").unwrap();
+        let c = std::fs::read_to_string(vo).unwrap();
+        let data: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(data.len(), 0);
+        assert!(c.contains("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\ts1\ts2"));
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(vo).ok();
     }
 
     #[test] fn test_desc_preserved() {
