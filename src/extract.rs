@@ -9,6 +9,25 @@ use std::io::{self, BufWriter, Write};
 use crate::fasta::FastaRecord;
 use crate::types::*;
 
+/// Write a NEXUS taxon label, single-quoting (and doubling embedded quotes) when it contains
+/// characters NEXUS treats as punctuation/whitespace, so labels like `iso[London]` survive.
+fn write_nexus_label(w: &mut impl Write, id: &[u8]) -> io::Result<()> {
+    let safe = !id.is_empty()
+        && id.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.');
+    if safe {
+        return w.write_all(id);
+    }
+    w.write_all(b"'")?;
+    for &b in id {
+        if b == b'\'' {
+            w.write_all(b"''")?;
+        } else {
+            w.write_all(&[b])?;
+        }
+    }
+    w.write_all(b"'")
+}
+
 /// Open an output sink: a file, or stdout when the path is "-".
 pub fn open_sink(path: &str) -> io::Result<Box<dyn Write>> {
     if path == "-" {
@@ -112,7 +131,7 @@ pub fn pass2_extract(
             }
             OutputFormat::Nexus => {
                 writer.write_all(b"    ")?;
-                writer.write_all(rec.id)?;
+                write_nexus_label(&mut writer, rec.id)?;
                 writer.write_all(b"  ")?;
                 writer.write_all(&var_buf)?;
                 writer.write_all(b"\n")?;
