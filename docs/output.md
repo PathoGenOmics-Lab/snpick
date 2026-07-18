@@ -88,6 +88,12 @@ site and per-sample genotypes.
     alignment length. `--ref-coords` maps `POS` (and the contig length) onto ungapped reference
     positions; `--reference <ID>` picks which sequence is that reference.
 
+    Under `--ref-coords`, columns where the reference has a **gap** (insertions relative to the
+    reference) have no reference coordinate of their own, so they take the position of the
+    preceding reference base. Several such variable columns therefore share one `POS` (and any
+    leading-gap column clamps to `POS 1`), producing duplicate-`POS` records — expected for
+    insertions, but some downstream tools may need `bcftools norm` or a sort.
+
 ### Genotype matrix guard
 
 The genotype matrix is `variants × samples` bytes. To avoid accidental multi-gigabyte VCFs,
