@@ -10,10 +10,11 @@
 [![Anaconda-Version Badge](https://anaconda.org/bioconda/snpick/badges/version.svg)](https://anaconda.org/bioconda/snpick)
 [![Anaconda-Downloads](https://img.shields.io/conda/dn/bioconda/snpick.svg?style=flat-square&label=downloads)](https://anaconda.org/bioconda/snpick)
 [![install with bioconda](https://img.shields.io/badge/install%20with-bioconda-brightgreen.svg?style=flat-square)](http://bioconda.github.io/recipes/snpick/README.html)
+[![Documentation](https://img.shields.io/badge/docs-online-%23af64d1?style=flat-square)](https://pathogenomics-lab.github.io/snpick/)
 
 **Fast, memory-efficient extraction of variable sites from FASTA alignments.**
 
-[Quick Start](#-quick-start) · [Features](#-features) · [Usage](#-usage) · [Benchmarks](#-benchmarks) · [Citation](#-citation) · [Changelog](CHANGELOG.md)
+**[📖 Documentation](https://pathogenomics-lab.github.io/snpick/)** · [Quick Start](#-quick-start) · [Features](#-features) · [Usage](#-usage) · [Benchmarks](#-benchmarks) · [Citation](#-citation) · [Changelog](CHANGELOG.md)
 
 </div>
 
@@ -29,6 +30,8 @@ __and Mireia Coscolla<sup>1</sup>__
 SNPick extracts variable (SNP) sites from whole-genome FASTA alignments. It produces reduced alignments ready for phylogenetic inference with ascertainment bias correction (ASC) in **IQ-TREE** and **RAxML**, and optionally generates VCF files.
 
 **Why not snp-sites?** snp-sites works well for small datasets but struggles with large alignments — it loads everything into memory and scales poorly. SNPick uses a zero-copy memory-mapped architecture that handles thousands of genomes in seconds with minimal RAM.
+
+> 📖 **Full documentation — [pathogenomics-lab.github.io/snpick](https://pathogenomics-lab.github.io/snpick/)** — installation, the complete usage reference, output formats, benchmarks, architecture, and a hands-on [tutorial](https://pathogenomics-lab.github.io/snpick/tutorials/tutorial/).
 
 ### SNPick vs snp-sites
 
