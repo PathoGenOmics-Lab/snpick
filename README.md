@@ -13,7 +13,7 @@
 
 **Fast, memory-efficient extraction of variable sites from FASTA alignments.**
 
-[Quick Start](#-quick-start) · [Features](#-features) · [Usage](#-usage) · [Benchmarks](#-benchmarks) · [Citation](#-citation)
+[Quick Start](#-quick-start) · [Features](#-features) · [Usage](#-usage) · [Benchmarks](#-benchmarks) · [Citation](#-citation) · [Changelog](CHANGELOG.md)
 
 </div>
 
