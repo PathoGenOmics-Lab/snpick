@@ -1,0 +1,17 @@
+Bootstrap: docker
+From: ghcr.io/pathogenomics-lab/snpick:latest
+
+# Apptainer / Singularity definition. Build with:
+#   apptainer build snpick.sif snpick.def
+# The published container image already ships a static snpick binary.
+
+%labels
+    Author Paula Ruiz-Rodriguez
+    Description Fast extraction of variable sites from FASTA alignments
+
+%runscript
+    exec /usr/local/bin/snpick "$@"
+
+%help
+    snpick — extract variable (SNP) sites from FASTA alignments.
+    Usage: apptainer run snpick.sif -f alignment.fasta -o snps.fasta
