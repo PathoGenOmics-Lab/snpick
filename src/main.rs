@@ -1,5 +1,6 @@
 mod extract;
 mod fasta;
+mod filter;
 mod scan;
 mod types;
 mod vcf;
@@ -14,6 +15,7 @@ use std::time::Instant;
 
 use crate::extract::{pass2_extract, ExtractParams};
 use crate::fasta::{get_ref_seq, index_fasta, FastaRecord};
+use crate::filter::{count_sites, SiteFilters};
 use crate::scan::{analyze, pass1_scan};
 use crate::types::*;
 use crate::vcf::write_vcf;
@@ -83,6 +85,16 @@ struct Args {
     #[arg(long)] keep_samples: Option<String>,
     /// Drop these sample IDs (comma-separated, or @file). Excludes --keep-samples.
     #[arg(long, conflicts_with = "keep_samples")] exclude_samples: Option<String>,
+    /// Drop sites whose fraction of missing genotypes exceeds this (0.0-1.0).
+    #[arg(long)] max_missing: Option<f64>,
+    /// Drop sites whose minor-allele count is below this.
+    #[arg(long)] mac: Option<u32>,
+    /// Drop sites whose minor-allele frequency is below this (0.0-1.0).
+    #[arg(long)] maf: Option<f64>,
+    /// Drop sites with fewer than this many samples with data.
+    #[arg(long)] min_samples: Option<u32>,
+    /// Drop sites with more than this many distinct alleles (e.g. 2 = biallelic).
+    #[arg(long)] max_alleles: Option<u32>,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -150,18 +162,19 @@ fn validate_ids(records: &[FastaRecord], allow_dups: bool) -> io::Result<()> {
 #[allow(clippy::too_many_arguments)]
 fn write_stats_json(
     path: &str, input: &str, reference: &str, seq_length: usize, num_samples: usize,
-    sc: &SiteCounts, include_gaps: bool, threads: usize,
+    sc: &SiteCounts, written: usize, include_gaps: bool, threads: usize,
 ) -> io::Result<()> {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let c = &sc.constant;
     let json = format!(
         "{{\n  \"snpick_version\": \"{}\",\n  \"input\": \"{}\",\n  \"reference\": \"{}\",\n  \
 \"sequences\": {},\n  \"alignment_length\": {},\n  \"variable_sites\": {},\n  \
+\"written_sites\": {},\n  \
 \"constant_sites\": {},\n  \"constant_by_base\": {{ \"A\": {}, \"C\": {}, \"G\": {}, \"T\": {} }},\n  \
 \"ambiguous_sites\": {},\n  \"fconst\": [{}, {}, {}, {}],\n  \
 \"include_gaps\": {},\n  \"threads\": {}\n}}\n",
         env!("CARGO_PKG_VERSION"), esc(input), esc(reference),
-        num_samples, seq_length, sc.variable,
+        num_samples, seq_length, sc.variable, written,
         c.total(), c.a, c.c, c.g, c.t, sc.ambiguous, c.a, c.c, c.g, c.t,
         include_gaps, threads,
     );
@@ -319,7 +332,6 @@ fn run() -> io::Result<()> {
     let t1 = start.elapsed().as_secs_f64();
 
     let (mut var_positions, site_counts) = analyze(&bitmask, &ref_seq, &lookup, args.include_gaps);
-    let num_var = var_positions.len();
 
     drop(bitmask);
     drop(ref_seq);
@@ -330,10 +342,32 @@ fn run() -> io::Result<()> {
     progress!(quiet, "[snpick] ASC fconst: {}", site_counts.constant.fconst());
     progress!(quiet, "[snpick] Pass 1 took {:.2}s.", t1);
 
+    // Per-site filtering (opt-in). Removes variable sites from the OUTPUT only; the fconst
+    // constant-site counts are unchanged, so ASC stays valid.
+    let filters = SiteFilters {
+        max_missing: args.max_missing, mac: args.mac, maf: args.maf,
+        min_samples: args.min_samples, max_alleles: args.max_alleles,
+    };
+    if filters.active() && !var_positions.is_empty() {
+        let pos_indices: Vec<usize> = var_positions.iter().map(|v| v.index).collect();
+        let stats = count_sites(data, &records, &pos_indices, layout, &lookup);
+        let ns_total = num_samples as u32;
+        let before = var_positions.len();
+        let mut i = 0;
+        var_positions.retain(|_| {
+            let keep = stats[i].passes(&filters, ns_total, args.include_gaps);
+            i += 1;
+            keep
+        });
+        progress!(quiet, "[snpick] Filtered {} of {} variable sites ({} remain).",
+            before - var_positions.len(), before, var_positions.len());
+    }
+    let num_var = var_positions.len();
+
     // Machine-readable stats sidecar (also emitted for dry-run and zero-variant).
     if let Some(ref sp) = args.stats_json {
         write_stats_json(sp, &args.fasta, &ref_name, seq_length, num_samples,
-            &site_counts, args.include_gaps, rayon::current_num_threads())?;
+            &site_counts, num_var, args.include_gaps, rayon::current_num_threads())?;
         progress!(quiet, "[snpick] Stats JSON written to {}.",
             if sp == "-" { "stdout" } else { sp });
     }
@@ -626,13 +660,32 @@ mod tests {
             ambiguous: 1,
         };
         let p = "/tmp/snpick_t_stats.json";
-        write_stats_json(p, "aln.fasta", "H37Rv", 30, 6, &sc, false, 8).unwrap();
+        write_stats_json(p, "aln.fasta", "H37Rv", 30, 6, &sc, 3, false, 8).unwrap();
         let c = std::fs::read_to_string(p).unwrap();
         assert!(c.contains("\"variable_sites\": 5"));
+        assert!(c.contains("\"written_sites\": 3"));
         assert!(c.contains("\"fconst\": [7, 7, 7, 4]"));
         assert!(c.contains("\"reference\": \"H37Rv\""));
         assert!(c.contains("\"sequences\": 6"));
         std::fs::remove_file(p).ok();
+    }
+
+    #[test] fn test_count_sites() {
+        // pos0 singleton (A5 T1), pos1 common (A3 C3), pos2 triallelic (A2 C2 G2).
+        let p = tmp("cnt", ">s1\nAAA\n>s2\nAAA\n>s3\nAAC\n>s4\nACC\n>s5\nACG\n>s6\nTCG\n");
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v, _) = analyze(&bm, &rs, &lk, false);
+        let idx: Vec<usize> = v.iter().map(|x| x.index).collect();
+        let stats = crate::filter::count_sites(&m, &recs, &idx, layout, &lk);
+        assert_eq!(stats.len(), 3);
+        assert_eq!(stats[0].counts, [5, 0, 0, 1]);
+        assert_eq!(stats[1].counts, [3, 3, 0, 0]);
+        assert_eq!(stats[2].counts, [2, 2, 2, 0]);
+        std::fs::remove_file(&p).ok();
     }
 
     #[test] fn test_exclude_samples_reclassifies() {
