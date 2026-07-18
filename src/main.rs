@@ -34,13 +34,33 @@ macro_rules! progress {
     name = "snpick",
     version = env!("CARGO_PKG_VERSION"),
     author = "Paula Ruiz-Rodriguez <paula.ruiz.rodriguez@csic.es>",
-    about = "A fast, memory-efficient tool for extracting variable sites from FASTA alignments."
+    about = "Fast, memory-efficient extraction of variable sites from FASTA alignments.",
+    long_about = "snpick extracts variable (SNP) sites from a whole-genome FASTA alignment, \
+producing a reduced alignment ready for phylogenetic inference (optionally with a VCF and the \
+ASC fconst constant-site counts for IQ-TREE / RAxML). It uses a zero-copy, memory-mapped, \
+parallel two-pass scan that scales to thousands of genomes with minimal RAM.",
+    after_help = "NOTES:\n  \
+- All input sequences must have the same length (an alignment). The first sequence is the\n    \
+reference for REF/ALT polarity.\n  \
+- fconst is printed as A,C,G,T (the order IQ-TREE's -fconst expects).\n  \
+- In the VCF, POS is the 1-based ALIGNMENT column, not an ungapped reference coordinate.\n  \
+- IUPAC ambiguous bases (N, R, Y, ...) are treated as missing data, never as alleles.\n  \
+- Gaps ('-') are ignored unless -g is given, where they become a 5th allele ('*' in the VCF).\n\n\
+EXAMPLES:\n  \
+snpick -f aln.fasta -o snps.fasta\n  \
+snpick -f aln.fasta -o snps.fasta --vcf --chrom NC_000962.3\n  \
+snpick -f aln.fasta -o snps.fasta -g -t 8 -q"
 )]
 struct Args {
+    /// Input FASTA alignment (all sequences must have equal length).
     #[arg(short, long)] fasta: String,
+    /// Output FASTA containing only the variable sites.
     #[arg(short, long)] output: String,
+    /// Treat gaps ('-') as a 5th character instead of ignoring them.
     #[arg(short = 'g', long)] include_gaps: bool,
+    /// Also write a VCF, named after the output (snps.fasta -> snps.vcf).
     #[arg(long)] vcf: bool,
+    /// Write the VCF to a custom path (implies --vcf).
     #[arg(long)] vcf_output: Option<String>,
     /// Silence progress logs on stderr (errors are still reported).
     #[arg(short = 'q', long)] quiet: bool,

@@ -2,6 +2,20 @@
 name = "snpick"
 version = "1.0.2"
 edition = "2021"
+rust-version = "1.74"
+authors = [
+    "Paula Ruiz-Rodriguez <paula.ruiz.rodriguez@csic.es>",
+    "Mireia Coscolla",
+]
+description = "Fast, memory-efficient extraction of variable sites from FASTA alignments."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/PathoGenOmics-Lab/snpick"
+homepage = "https://pathogenomics-lab.github.io/snpick/"
+documentation = "https://pathogenomics-lab.github.io/snpick/"
+readme = "README.md"
+keywords = ["bioinformatics", "phylogenetics", "snp", "fasta", "vcf"]
+categories = ["science", "command-line-utilities"]
+exclude = ["benchmarks/", "docs/", "logo/", "site/", ".github/"]
 
 [dependencies]
 clap = { version = "4.5.21", features = ["derive"] }
