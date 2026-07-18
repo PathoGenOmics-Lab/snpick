@@ -369,6 +369,23 @@ mod tests {
         std::fs::remove_file(&p).ok();
     }
 
+    #[test] fn test_all_gap_column_counted() {
+        // Under --include-gaps an all-gap column is tallied as ambiguous, so
+        // variable + constant + ambiguous still equals seq_length.
+        let p = tmp("allgap", ">s1\nA-\n>s2\nA-\n");
+        let m = setup(&p);
+        let lk = build_lookup(true);
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v, sc) = analyze(&bm, &rs, &lk, true);
+        assert_eq!(v.len(), 0);
+        assert_eq!(sc.constant.total(), 1);
+        assert_eq!(sc.ambiguous, 1);
+        assert_eq!(sc.variable + sc.constant.total() + sc.ambiguous, sl);
+        std::fs::remove_file(&p).ok();
+    }
+
     #[test] fn test_paths() {
         let p = tmp("pdg", ">x\nA\n");
         assert!(check_paths_differ(&p, "/tmp/snpick_t_pdg2.fa").is_ok());

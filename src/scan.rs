@@ -118,6 +118,7 @@ pub fn analyze(
             else if bits & BIT_C != 0 { cs.c += 1; }
             else if bits & BIT_G != 0 { cs.g += 1; }
             else if bits & BIT_T != 0 { cs.t += 1; }
+            else { ambiguous += 1; } // all-gap column (BIT_GAP only) under --include-gaps
         } else {
             ambiguous += 1;
         }
