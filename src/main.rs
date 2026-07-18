@@ -6,13 +6,14 @@ mod vcf;
 
 use clap::Parser;
 use memmap2::Mmap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
 use crate::extract::{pass2_extract, ExtractParams};
-use crate::fasta::{get_ref_seq, index_fasta};
+use crate::fasta::{get_ref_seq, index_fasta, FastaRecord};
 use crate::scan::{analyze, pass1_scan};
 use crate::types::*;
 use crate::vcf::write_vcf;
@@ -70,6 +71,10 @@ struct Args {
     /// CHROM / contig name written to the VCF (e.g. NC_000962.3).
     #[arg(long, default_value = "1")]
     chrom: String,
+    /// Sequence ID to use as the REF/polarity reference (default: first sequence).
+    #[arg(long)] reference: Option<String>,
+    /// Permit duplicate sequence IDs instead of erroring.
+    #[arg(long)] allow_dup_ids: bool,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -111,6 +116,39 @@ fn check_paths_differ(a: &str, b: &str) -> io::Result<()> {
             format!("Paths resolve to same file: {}", pa.display())));
     }
     Ok(())
+}
+
+/// Reject empty sequence IDs, and duplicate IDs unless `allow_dups`.
+/// Duplicate sample names yield spec-invalid VCFs and trees downstream tools reject.
+fn validate_ids(records: &[FastaRecord], allow_dups: bool) -> io::Result<()> {
+    let mut seen: HashSet<&[u8]> = HashSet::with_capacity(records.len());
+    for (i, rec) in records.iter().enumerate() {
+        if rec.id.is_empty() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Record #{} has an empty sequence ID.", i + 1)));
+        }
+        if !allow_dups && !seen.insert(rec.id) {
+            let id = std::str::from_utf8(rec.id).unwrap_or("?");
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Duplicate sequence ID '{}' (record #{}). Use --allow-dup-ids to permit.",
+                    id, i + 1)));
+        }
+    }
+    Ok(())
+}
+
+/// Index of the record to use as the REF/polarity reference.
+fn reference_index(records: &[FastaRecord], reference: &Option<String>) -> io::Result<usize> {
+    match reference {
+        Some(id) => {
+            let target = id.as_bytes();
+            records.iter().position(|r| r.id == target).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput,
+                    format!("--reference '{}' not found among sequence IDs.", id))
+            })
+        }
+        None => Ok(0),
+    }
 }
 
 // =============================================================================
@@ -173,13 +211,17 @@ fn run() -> io::Result<()> {
     let (records, seq_length, layout) = index_fasta(data)?;
     let num_samples = records.len();
 
+    validate_ids(&records, args.allow_dup_ids)?;
+    let ref_idx = reference_index(&records, &args.reference)?;
+    let ref_name = std::str::from_utf8(records[ref_idx].id).unwrap_or("reference").to_string();
+
     progress!(quiet, "[snpick] Mapped {} bytes. {} sequences × {} positions.{}",
         data.len(), num_samples, seq_length,
         if layout.single_line { "" } else { " (multi-line FASTA)" });
 
     // Pass 1: bitmask scan
     let bitmask = pass1_scan(data, &records, seq_length, layout, &lookup);
-    let ref_seq = get_ref_seq(data, &records[0], seq_length, layout);
+    let ref_seq = get_ref_seq(data, &records[ref_idx], seq_length, layout);
     let t1 = start.elapsed().as_secs_f64();
 
     let (mut var_positions, site_counts) = analyze(&bitmask, &ref_seq, &lookup, args.include_gaps);
@@ -209,7 +251,7 @@ fn run() -> io::Result<()> {
         // Still honour a requested VCF: emit a valid header-only file so a
         // pipeline that declares the .vcf as an output doesn't break.
         if let Some(ref vp) = vcf_path {
-            write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom)?;
+            write_vcf(&[], num_samples, &[], vp, &records, seq_length, &args.chrom, &ref_name)?;
             progress!(quiet, "[snpick] VCF written to {} (header only — no variable sites).", vp);
         }
         return Ok(());
@@ -236,7 +278,7 @@ fn run() -> io::Result<()> {
 
     // Write VCF
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
-        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom)?;
+        write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom, &ref_name)?;
         progress!(quiet, "[snpick] VCF written to {}.", vp);
     }
 
@@ -332,7 +374,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -353,7 +395,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -375,7 +417,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -399,7 +441,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, true);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
@@ -416,7 +458,7 @@ mod tests {
         let vo = "/tmp/snpick_t_hdr.vcf";
         let m = setup(&p);
         let (recs, sl, _layout) = index_fasta(&m).unwrap();
-        write_vcf(&[], recs.len(), &[], vo, &recs, sl, "1").unwrap();
+        write_vcf(&[], recs.len(), &[], vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let data: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         assert_eq!(data.len(), 0);
@@ -455,6 +497,45 @@ mod tests {
         let bm2 = pass1_scan(&m, &recs, sl, layout, &lk_yes);
         let (v2, _) = analyze(&bm2, &rs, &lk_yes, true);
         assert_eq!(v2.len(), 1);
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_validate_ids() {
+        let p = tmp("ids", ">a\nAC\n>a\nAT\n>b\nAG\n");
+        let m = setup(&p);
+        let (recs, _, _) = index_fasta(&m).unwrap();
+        assert!(validate_ids(&recs, false).is_err());   // duplicate 'a'
+        assert!(validate_ids(&recs, true).is_ok());      // allowed
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_reference_index() {
+        let p = tmp("refi", ">a\nAC\n>b\nAT\n>c\nAG\n");
+        let m = setup(&p);
+        let (recs, _, _) = index_fasta(&m).unwrap();
+        assert_eq!(reference_index(&recs, &None).unwrap(), 0);
+        assert_eq!(reference_index(&recs, &Some("b".to_string())).unwrap(), 1);
+        assert!(reference_index(&recs, &Some("zzz".to_string())).is_err());
+        std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_reference_polarity() {
+        // Choosing a different reference flips which base is REF vs ALT.
+        let p = tmp("refp", ">a\nAT\n>b\nCT\n");
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        // default reference = record 0 ('a') -> REF A
+        let rs0 = get_ref_seq(&m, &recs[0], sl, layout);
+        let (v0, _) = analyze(&bm, &rs0, &lk, false);
+        assert_eq!(v0[0].ref_base, b'A');
+        assert_eq!(v0[0].alt_bases, vec![b'C']);
+        // reference = record 1 ('b') -> REF C
+        let rs1 = get_ref_seq(&m, &recs[1], sl, layout);
+        let (v1, _) = analyze(&bm, &rs1, &lk, false);
+        assert_eq!(v1[0].ref_base, b'C');
+        assert_eq!(v1[0].alt_bases, vec![b'A']);
         std::fs::remove_file(&p).ok();
     }
 
@@ -529,7 +610,7 @@ mod tests {
         let (mut v, _) = analyze(&bm, &rs, &lk, false);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(fo).unwrap();
         let l: Vec<&str> = c.lines().collect();
         assert_eq!(l[1], "AG"); assert_eq!(l[3], "AC"); assert_eq!(l[5], "CG");
@@ -681,7 +762,7 @@ mod tests {
         assert_eq!(v[0].alt_bases, vec![b'C']);
         let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout };
         let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
-        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1").unwrap();
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref").unwrap();
         let c = std::fs::read_to_string(vo).unwrap();
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
