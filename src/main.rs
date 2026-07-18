@@ -278,7 +278,9 @@ fn write_sites_tsv(path: &str, var: &[VariablePosition], ref_pos: Option<&[u32]>
         format!("Cannot create sites TSV '{}': {}", path, e)))?);
     writeln!(w, "alignment_pos\tref_pos\tref\talt")?;
     for vp in var {
-        let rp = ref_pos.map(|r| r[vp.index]).unwrap_or((vp.index + 1) as u32);
+        // Clamp to 1 to match the VCF POS (a leading-gap reference column has ungapped
+        // position 0, which is not a valid 1-based coordinate).
+        let rp = ref_pos.map(|r| r[vp.index].max(1)).unwrap_or((vp.index + 1) as u32);
         let refc = if vp.ref_base == b'-' { '*' } else { vp.ref_base as char };
         let alt: String = vp.alt_bases.iter()
             .map(|&b| if b == b'-' { "*".to_string() } else { (b as char).to_string() })
@@ -689,7 +691,7 @@ mod tests {
         let dl: Vec<&str> = c.lines().filter(|l| !l.starts_with('#')).collect();
         let f: Vec<&str> = dl[0].split('\t').collect();
         assert_eq!(f[1], "2");            // POS (gap-in-ref site)
-        assert_eq!(f[3], "*");            // REF: gap → '*', not '-'
+        assert_eq!(f[3], "N");            // REF: gap → 'N' (valid VCF), not '-' or '*'
         assert_eq!(f[4], "T");            // ALT
         assert!(!c.contains("\t-\t"));    // no bare hyphen field anywhere
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();

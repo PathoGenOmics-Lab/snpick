@@ -10,8 +10,10 @@ pub const BIT_G: u8 = 0b00100;
 pub const BIT_T: u8 = 0b01000;
 pub const BIT_GAP: u8 = 0b10000;
 
-/// Maximum alignment length (prevents OOM on malicious input).
-pub const MAX_SEQ_LENGTH: usize = 10_000_000_000;
+/// Maximum alignment length. Kept below `u32::MAX` so alignment columns and reference
+/// positions (VCF `POS`) always fit in a `u32` without truncation; also bounds memory on
+/// malicious input (the bitmask alone is one byte per column).
+pub const MAX_SEQ_LENGTH: usize = 4_000_000_000;
 
 /// Maximum VCF genotype matrix size in bytes.
 pub const MAX_VCF_GENO_BYTES: usize = 4_000_000_000;

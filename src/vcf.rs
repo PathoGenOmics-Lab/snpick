@@ -59,9 +59,10 @@ pub fn write_vcf(
             lut[ab as usize] = (i + 1) as u8;
         }
 
-        // A gap reference renders as '*' (VCF v4.2 REF must be A/C/G/T/N, never '-'),
-        // consistent with the '-'→'*' mapping applied to ALT.
-        let ref_byte = if vp.ref_base == b'-' { b'*' } else { vp.ref_base };
+        // VCF v4.2 REF must be A/C/G/T/N — never '-' and never '*' (which is an ALT-only
+        // spanning-deletion allele that bcftools/htslib reject in REF). Render a gap reference
+        // as 'N'. (ALT gaps stay '*', the snp-sites convention.)
+        let ref_byte = if vp.ref_base == b'-' { b'N' } else { vp.ref_base };
 
         row.clear();
         let pos = match pos_map {
