@@ -20,6 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
+      skip: ${{ steps.tagcheck.outputs.skip }}
     steps:
       - uses: actions/checkout@v4
 
@@ -32,16 +33,17 @@ jobs:
           echo "📦 Version: $VERSION"
 
       - name: Check if tag already exists
+        id: tagcheck
         run: |
           if git ls-remote --tags origin | grep -q "refs/tags/${{ steps.version.outputs.tag }}$"; then
             echo "⚠️ Tag ${{ steps.version.outputs.tag }} already exists — skipping release."
-            echo "SKIP=true" >> "$GITHUB_ENV"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
     # Build matrix for cross-platform binaries
   build:
     needs: release
-    if: needs.release.outputs.version != ''
+    if: needs.release.outputs.version != '' && needs.release.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +96,7 @@ jobs:
   # Create GitHub release with all binaries
   publish:
     needs: [release, build]
+    if: needs.release.outputs.skip != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
