@@ -1,11 +1,20 @@
+---
+tags:
+  - internals
+---
+
 # Architecture
 
-```text
-Input FASTA ──mmap──▶ Index records ──▶ Pass 1: bitmask scan ──▶ Analyze
-                           │                    (parallel)           │
-                           │                                         ▼
-                           └──────────▶ Pass 2: extract sites ──▶ FASTA + VCF
-                                         (sparse random access)
+```mermaid
+flowchart LR
+    A([Input FASTA]) -->|mmap once| B[Index records]
+    B --> C[Pass 1: bitmask scan]
+    C -->|parallel · OR-merge| D[Analyze / classify]
+    D --> E{Variable columns}
+    B --> F[Pass 2: sparse extract]
+    E --> F
+    F --> G([Reduced FASTA])
+    F --> H([VCF v4.2])
 ```
 
 SNPick memory-maps the input once and shares it, read-only, across two passes — **no copies of

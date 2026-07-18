@@ -6,3 +6,6 @@ test_*.vcf
 
 # MkDocs build output
 site/
+
+# MkDocs Material social-cards / plugin cache
+.cache/

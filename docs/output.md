@@ -1,3 +1,10 @@
+---
+tags:
+  - vcf
+  - output
+  - phylogenetics
+---
+
 # Output formats
 
 ## Reduced FASTA

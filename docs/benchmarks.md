@@ -1,3 +1,8 @@
+---
+tags:
+  - performance
+---
+
 # Benchmarks
 
 Benchmarks use simulated *M. tuberculosis*-like genomes (4.4 Mbp, ~65% GC, 3.6% variable sites).

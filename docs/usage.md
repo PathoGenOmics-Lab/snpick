@@ -1,3 +1,9 @@
+---
+tags:
+  - cli
+  - usage
+---
+
 # Usage
 
 ```
@@ -74,8 +80,11 @@ By default the VCF `CHROM` and `##contig` are `1`. Match your reference so downs
 (bcftools, GATK, IGV) line up without post-processing:
 
 ```bash
-snpick -f alignment.fasta -o snps.fasta --vcf --chrom NC_000962.3
+snpick -f alignment.fasta -o snps.fasta --vcf --chrom NC_000962.3 # (1)!
 ```
+
+1. `--chrom` sets **both** the `##contig` header ID and the per-row `CHROM` column, and is
+   rejected if it contains whitespace (which would break the tab-delimited columns).
 
 ### Include gaps
 

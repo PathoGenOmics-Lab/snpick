@@ -1,0 +1,62 @@
+/* ------------------------------------------------------------------ *
+ * SNPick — brand palette & polish
+ * ------------------------------------------------------------------ */
+
+:root {
+  --md-primary-fg-color:        #5e35b1;
+  --md-primary-fg-color--light: #7e57c2;
+  --md-primary-fg-color--dark:  #4527a0;
+  --md-accent-fg-color:         #ff0077;
+  --snpick-alt:                 #6ee36a;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-accent-fg-color: #ff4d97;
+}
+
+/* Brand gradient on the primary heading of the landing page */
+.md-typeset h1#snpick {
+  background: linear-gradient(90deg, var(--md-primary-fg-color--light), var(--snpick-alt));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* Cards: subtle lift on hover */
+.md-typeset .grid.cards > ul > li,
+.md-typeset .grid > .card {
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--md-accent-fg-color);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
+  transform: translateY(-2px);
+}
+
+/* Centre the hero logo and give it breathing room */
+.md-typeset h1#snpick + p img,
+.md-typeset p > img[alt="SNPick logo"] {
+  display: block;
+  margin: 1.2rem auto 0.6rem;
+}
+
+/* Tighten the comparison / option tables */
+.md-typeset table:not([class]) th {
+  background: var(--md-primary-fg-color);
+  color: #fff;
+}
+
+/* "Last updated" footer meta a touch quieter */
+.md-source-file {
+  opacity: 0.85;
+}
+
+/* Green "supported" checks in comparison tables */
+.md-typeset .snpick-yes {
+  color: #2e9e2e;
+}
+[data-md-color-scheme="slate"] .md-typeset .snpick-yes {
+  color: var(--snpick-alt);
+}

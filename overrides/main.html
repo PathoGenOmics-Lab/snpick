@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block announce %}
+  <a href="{{ 'changelog/' | url }}">
+    <span class="twemoji">
+      {% include ".icons/material/party-popper.svg" %}
+    </span>
+    <strong>SNPick 1.0.2</strong> is here — see what changed in the changelog.
+  </a>
+{% endblock %}
