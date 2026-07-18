@@ -5,7 +5,7 @@
 //! and removed on drop.
 
 use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
 use flate2::read::MultiGzDecoder;
@@ -29,15 +29,40 @@ fn temp_path() -> PathBuf {
     std::env::temp_dir().join(format!("snpick-{}.tmp", std::process::id()))
 }
 
+/// Read up to 2 magic bytes, tolerating short reads (a pipe's first read may return < 2 bytes).
+fn read_magic(mut r: impl Read) -> io::Result<(usize, [u8; 2])> {
+    let mut buf = [0u8; 2];
+    let mut n = 0;
+    while n < 2 {
+        match r.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok((n, buf))
+}
+
 fn spool_to_temp(mut reader: impl Read) -> io::Result<(Mmap, PathBuf)> {
     let tp = temp_path();
-    {
-        let mut out = BufWriter::new(File::create(&tp)?);
-        io::copy(&mut reader, &mut out)?;
+    let build = (|| -> io::Result<Mmap> {
+        {
+            let mut out = BufWriter::new(File::create(&tp)?);
+            io::copy(&mut reader, &mut out)?;
+            out.flush()?;
+        }
+        let f = File::open(&tp)?;
+        unsafe { Mmap::map(&f) }
+    })();
+    match build {
+        Ok(mmap) => Ok((mmap, tp)),
+        Err(e) => {
+            // Don't leak the spool file if decompression / mmap failed.
+            let _ = std::fs::remove_file(&tp);
+            Err(e)
+        }
     }
-    let f = File::open(&tp)?;
-    let mmap = unsafe { Mmap::map(&f)? };
-    Ok((mmap, tp))
 }
 
 /// Map the input for reading. `path == "-"` reads stdin; gzip/bgzip input (detected by magic
@@ -46,8 +71,7 @@ pub fn map_input(path: &str) -> io::Result<MappedInput> {
     if path == "-" {
         // Peek the first two bytes, then chain them back so gzip over stdin is detected.
         let mut reader = BufReader::new(io::stdin().lock());
-        let mut magic = [0u8; 2];
-        let n = reader.read(&mut magic)?;
+        let (n, magic) = read_magic(&mut reader)?;
         let head = std::io::Cursor::new(magic[..n].to_vec());
         let stream = head.chain(reader);
         let (mmap, tp) = if n == 2 && magic == [0x1f, 0x8b] {
@@ -62,8 +86,7 @@ pub fn map_input(path: &str) -> io::Result<MappedInput> {
         .map_err(|e| io::Error::new(e.kind(), format!("Cannot open '{}': {}", path, e)))?;
 
     // Peek the first two bytes for the gzip magic (0x1f 0x8b); bgzip is a valid gzip stream.
-    let mut magic = [0u8; 2];
-    let n = (&f).read(&mut magic)?;
+    let (n, magic) = read_magic(&f)?;
     let is_gzip = n == 2 && magic == [0x1f, 0x8b];
 
     if is_gzip {
