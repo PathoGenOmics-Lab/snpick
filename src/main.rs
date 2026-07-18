@@ -91,6 +91,8 @@ struct Args {
     #[arg(long)] vcf_output: Option<String>,
     /// Silence progress logs on stderr (errors are still reported).
     #[arg(short = 'q', long)] quiet: bool,
+    /// Increase detail: -v adds diagnostics, -vv adds an allele-class histogram.
+    #[arg(short, long, action = clap::ArgAction::Count)] verbose: u8,
     /// Number of threads for the parallel scan (default: all logical cores).
     #[arg(short = 't', long, value_parser = parse_threads)]
     threads: Option<usize>,
@@ -465,6 +467,24 @@ fn run() -> io::Result<()> {
     }
     let num_var = var_positions.len();
 
+    if args.verbose >= 1 && !quiet {
+        let mbps = data.len() as f64 / 1e6 / t1.max(1e-9);
+        eprintln!("[snpick] Threads: {}. Layout: {}. Scan throughput: {:.0} MB/s.",
+            rayon::current_num_threads(),
+            if layout.single_line { "single-line" } else { "multi-line" }, mbps);
+    }
+    if args.verbose >= 2 && !quiet {
+        let (mut bi, mut tri, mut tetra) = (0usize, 0usize, 0usize);
+        for vp in &var_positions {
+            match 1 + vp.alt_bases.len() {
+                2 => bi += 1,
+                3 => tri += 1,
+                _ => tetra += 1,
+            }
+        }
+        eprintln!("[snpick] Allele classes: biallelic={} triallelic={} 4+-allelic={}", bi, tri, tetra);
+    }
+
     // Machine-readable stats sidecar (also emitted for dry-run and zero-variant).
     if let Some(ref sp) = args.stats_json {
         write_stats_json(sp, &args.fasta, &ref_name, seq_length, num_samples,
@@ -525,7 +545,12 @@ fn run() -> io::Result<()> {
 fn main() {
     if let Err(e) = run() {
         eprintln!("[snpick] Error: {}", e);
-        std::process::exit(1);
+        // Exit codes: 2 for bad input/data, 1 for I/O and everything else.
+        let code = match e.kind() {
+            io::ErrorKind::InvalidData | io::ErrorKind::InvalidInput => 2,
+            _ => 1,
+        };
+        std::process::exit(code);
     }
 }
 
