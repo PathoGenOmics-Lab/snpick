@@ -55,8 +55,8 @@ snpick -f aln.fasta -o snps.fasta -g -t 8 -q"
 struct Args {
     /// Input FASTA alignment (all sequences must have equal length).
     #[arg(short, long)] fasta: String,
-    /// Output FASTA containing only the variable sites.
-    #[arg(short, long)] output: String,
+    /// Output FASTA containing only the variable sites (not needed with --dry-run).
+    #[arg(short, long, required_unless_present = "dry_run")] output: Option<String>,
     /// Treat gaps ('-') as a 5th character instead of ignoring them.
     #[arg(short = 'g', long)] include_gaps: bool,
     /// Also write a VCF, named after the output (snps.fasta -> snps.vcf).
@@ -75,6 +75,10 @@ struct Args {
     #[arg(long)] reference: Option<String>,
     /// Permit duplicate sequence IDs instead of erroring.
     #[arg(long)] allow_dup_ids: bool,
+    /// Write a machine-readable JSON run summary to this path ('-' for stdout).
+    #[arg(long)] stats_json: Option<String>,
+    /// Report site statistics without writing any FASTA/VCF output.
+    #[arg(long)] dry_run: bool,
 }
 
 /// Parse a positive thread count (Rayon treats 0 as "use default", which would
@@ -137,6 +141,33 @@ fn validate_ids(records: &[FastaRecord], allow_dups: bool) -> io::Result<()> {
     Ok(())
 }
 
+/// Emit a flat JSON run summary to `path` ('-' = stdout). Hand-written (no serde);
+/// only the string fields need escaping.
+#[allow(clippy::too_many_arguments)]
+fn write_stats_json(
+    path: &str, input: &str, reference: &str, seq_length: usize, num_samples: usize,
+    sc: &SiteCounts, include_gaps: bool, threads: usize,
+) -> io::Result<()> {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let c = &sc.constant;
+    let json = format!(
+        "{{\n  \"snpick_version\": \"{}\",\n  \"input\": \"{}\",\n  \"reference\": \"{}\",\n  \
+\"sequences\": {},\n  \"alignment_length\": {},\n  \"variable_sites\": {},\n  \
+\"constant_sites\": {},\n  \"constant_by_base\": {{ \"A\": {}, \"C\": {}, \"G\": {}, \"T\": {} }},\n  \
+\"ambiguous_sites\": {},\n  \"fconst\": [{}, {}, {}, {}],\n  \
+\"include_gaps\": {},\n  \"threads\": {}\n}}\n",
+        env!("CARGO_PKG_VERSION"), esc(input), esc(reference),
+        num_samples, seq_length, sc.variable,
+        c.total(), c.a, c.c, c.g, c.t, sc.ambiguous, c.a, c.c, c.g, c.t,
+        include_gaps, threads,
+    );
+    if path == "-" {
+        io::stdout().write_all(json.as_bytes())
+    } else {
+        std::fs::write(path, json)
+    }
+}
+
 /// Index of the record to use as the REF/polarity reference.
 fn reference_index(records: &[FastaRecord], reference: &Option<String>) -> io::Result<usize> {
     match reference {
@@ -171,7 +202,9 @@ fn run() -> io::Result<()> {
     let lookup = build_lookup(args.include_gaps);
     let upper = build_upper();
 
-    let do_vcf = args.vcf || args.vcf_output.is_some();
+    let dry_run = args.dry_run;
+    // --dry-run reports statistics only, so it writes no FASTA/VCF.
+    let do_vcf = (args.vcf || args.vcf_output.is_some()) && !dry_run;
 
     // A CHROM with whitespace would break the tab-delimited VCF columns.
     if do_vcf && (args.chrom.is_empty() || args.chrom.bytes().any(|b| b.is_ascii_whitespace())) {
@@ -179,17 +212,23 @@ fn run() -> io::Result<()> {
             "--chrom must be non-empty and contain no whitespace."));
     }
 
-    // Validate paths
-    check_paths_differ(&args.fasta, &args.output)?;
+    // Output path (clap guarantees it is present unless --dry-run).
+    let out_path: Option<String> = if dry_run { None } else { args.output.clone() };
+
+    // Validate paths (skip when writing nothing).
+    if let Some(ref out) = out_path {
+        check_paths_differ(&args.fasta, out)?;
+    }
     let vcf_path = if do_vcf {
-        let vp = args.vcf_output.unwrap_or_else(|| {
-            let out = Path::new(&args.output);
-            let stem = out.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-            let parent = out.parent().unwrap_or(Path::new("."));
+        let out = out_path.as_deref().unwrap_or("output");
+        let vp = args.vcf_output.clone().unwrap_or_else(|| {
+            let o = Path::new(out);
+            let stem = o.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+            let parent = o.parent().unwrap_or(Path::new("."));
             parent.join(format!("{}.vcf", stem)).to_string_lossy().into_owned()
         });
         check_paths_differ(&args.fasta, &vp)?;
-        check_paths_differ(&args.output, &vp)?;
+        check_paths_differ(out, &vp)?;
         Some(vp)
     } else { None };
 
@@ -236,11 +275,27 @@ fn run() -> io::Result<()> {
     progress!(quiet, "[snpick] ASC fconst: {}", site_counts.constant.fconst());
     progress!(quiet, "[snpick] Pass 1 took {:.2}s.", t1);
 
+    // Machine-readable stats sidecar (also emitted for dry-run and zero-variant).
+    if let Some(ref sp) = args.stats_json {
+        write_stats_json(sp, &args.fasta, &ref_name, seq_length, num_samples,
+            &site_counts, args.include_gaps, rayon::current_num_threads())?;
+        progress!(quiet, "[snpick] Stats JSON written to {}.",
+            if sp == "-" { "stdout" } else { sp });
+    }
+
+    if dry_run {
+        progress!(quiet, "[snpick] Dry run — no output written.");
+        return Ok(());
+    }
+
+    // Past the dry-run gate, an output path is guaranteed (clap-enforced).
+    let out = out_path.as_deref().expect("output is required unless --dry-run");
+
     // Handle zero-variant case
     if num_var == 0 {
         progress!(quiet, "[snpick] No variable positions — writing empty output.");
-        let out = File::create(&args.output)?;
-        let mut w = BufWriter::new(out);
+        let outf = File::create(out)?;
+        let mut w = BufWriter::new(outf);
         for rec in &records {
             w.write_all(b">")?;
             w.write_all(rec.id)?;
@@ -270,11 +325,11 @@ fn run() -> io::Result<()> {
 
     // Pass 2: extract variable sites
     let ep = ExtractParams {
-        records: &records, output: &args.output,
+        records: &records, output: out,
         collect_vcf: do_vcf, lookup: &lookup, upper: &upper, layout,
     };
     let vcf_geno = pass2_extract(data, &mut var_positions, &ep)?;
-    progress!(quiet, "[snpick] Pass 2: Wrote {} sequences to {}.", num_samples, args.output);
+    progress!(quiet, "[snpick] Pass 2: Wrote {} sequences to {}.", num_samples, out);
 
     // Write VCF
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
@@ -507,6 +562,22 @@ mod tests {
         assert!(validate_ids(&recs, false).is_err());   // duplicate 'a'
         assert!(validate_ids(&recs, true).is_ok());      // allowed
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test] fn test_stats_json() {
+        let sc = SiteCounts {
+            constant: ConstantSiteCounts { a: 7, c: 7, g: 7, t: 4 },
+            variable: 5,
+            ambiguous: 1,
+        };
+        let p = "/tmp/snpick_t_stats.json";
+        write_stats_json(p, "aln.fasta", "H37Rv", 30, 6, &sc, false, 8).unwrap();
+        let c = std::fs::read_to_string(p).unwrap();
+        assert!(c.contains("\"variable_sites\": 5"));
+        assert!(c.contains("\"fconst\": [7, 7, 7, 4]"));
+        assert!(c.contains("\"reference\": \"H37Rv\""));
+        assert!(c.contains("\"sequences\": 6"));
+        std::fs::remove_file(p).ok();
     }
 
     #[test] fn test_reference_index() {
