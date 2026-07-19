@@ -24,9 +24,12 @@ pub fn write_vcf(
     writeln!(w, "##fileformat=VCFv4.2")?;
     writeln!(w, "##source=snpick v{}", env!("CARGO_PKG_VERSION"))?;
     writeln!(w, "##reference={}", reference)?;
-    // With reference coordinates the contig length is the ungapped reference length.
+    // With reference coordinates the contig length is the ungapped reference length. POS values
+    // are clamped to >= 1 below, so clamp the declared length the same way: an all-gap reference
+    // has ungapped length 0, which would otherwise declare `length=0` while emitting POS=1
+    // records — a self-contradictory VCF that htslib rejects.
     let contig_len = match pos_map {
-        Some(rp) => *rp.last().unwrap_or(&(seq_length as u32)) as usize,
+        Some(rp) => (*rp.last().unwrap_or(&(seq_length as u32))).max(1) as usize,
         None => seq_length,
     };
     writeln!(w, "##contig=<ID={},length={}>", chrom, contig_len)?;

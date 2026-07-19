@@ -777,6 +777,34 @@ mod tests {
         std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
     }
 
+    #[test] fn test_vcf_allgap_ref_contig_len() {
+        // All-gap reference under --ref-coords: ungapped length is 0, but POS clamps to 1, so the
+        // declared contig length must also be >= 1 — an emitted POS must never exceed it.
+        let p = tmp("agref", ">ref\n--\n>s1\nAC\n>s2\nGT\n");
+        let fo = "/tmp/snpick_t_agref_out.fa"; let vo = "/tmp/snpick_t_agref.vcf";
+        let m = setup(&p);
+        let lk = build_lookup(false);
+        let up = build_upper();
+        let (recs, sl, layout) = index_fasta(&m).unwrap();
+        let bm = pass1_scan(&m, &recs, sl, layout, &lk);
+        let rs = get_ref_seq(&m, &recs[0], sl, layout);
+        let (mut v, _) = analyze(&bm, &rs, &lk, false);
+        let ep = ExtractParams { records: &recs, output: fo, collect_vcf: true, lookup: &lk, upper: &up, layout, format: OutputFormat::Fasta, progress: false };
+        let g = pass2_extract(&m, &mut v, &ep).unwrap().unwrap();
+        let rp = snpick::coords::ref_positions(&rs);
+        write_vcf(&g, recs.len(), &v, vo, &recs, sl, "1", "ref", Some(&rp)).unwrap();
+        let c = std::fs::read_to_string(vo).unwrap();
+        let contig_len: usize = c.lines()
+            .find_map(|l| l.strip_prefix("##contig=<ID=1,length="))
+            .and_then(|s| s.trim_end_matches('>').parse().ok()).unwrap();
+        assert!(contig_len >= 1, "contig length was {}", contig_len);
+        for l in c.lines().filter(|l| !l.starts_with('#')) {
+            let pos: usize = l.split('\t').nth(1).unwrap().parse().unwrap();
+            assert!(pos <= contig_len, "POS {} exceeds contig length {}", pos, contig_len);
+        }
+        std::fs::remove_file(&p).ok(); std::fs::remove_file(fo).ok(); std::fs::remove_file(vo).ok();
+    }
+
     #[test] fn test_vcf_header_only() {
         // Zero variable sites but VCF requested: a valid header-only VCF that
         // still lists every sample, so downstream pipelines find the file.
