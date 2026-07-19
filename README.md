@@ -38,8 +38,8 @@ SNPick extracts variable (SNP) sites from whole-genome FASTA alignments. It prod
 | | **SNPick** | **snp-sites** |
 |---|---|---|
 | Architecture | Zero-copy mmap, parallel scan | Full matrix in memory |
-| 250 seqs × 4.4 Mbp | **0.9 s**, 105 MB | 9.5 s, 520 MB |
-| 1000 seqs × 4.4 Mbp | **~3 s**, ~140 MB | >26 min (killed), 3+ GB |
+| 250 seqs × 4.4 Mbp | **1.72 s**, 105 MB | 9.38 s, 213 MB |
+| 1000 seqs × 4.4 Mbp | **10.27 s**, 217 MB | killed (OOM) |
 | ASC fconst output | ✅ Built-in | ❌ Not supported |
 | VCF output | ✅ Optional | ✅ Default |
 | Gap handling | ✅ Optional (`-g`) | ✅ Default |
@@ -295,7 +295,7 @@ Simulated *M. tuberculosis*-like genomes (4.4 Mbp, ~65% GC, 3.6% variable sites)
   <img src="benchmarks/benchmark_length.png" alt="Benchmark: length scaling" width="750" />
 </p>
 
-SNPick maintains **O(L)** memory regardless of sequence count, while snp-sites requires **O(N×L)**.
+SNPick's memory grows far more slowly than snp-sites' **O(N×L)** — ≈39 MB at 10 sequences up to ≈217 MB at 1000, versus snp-sites holding the full matrix in memory until it is killed on large inputs.
 
 ---
 

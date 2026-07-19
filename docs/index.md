@@ -77,8 +77,8 @@ alignments ready for phylogenetic inference with ascertainment-bias correction (
 | | **SNPick** | **snp-sites** |
 |---|---|---|
 | Architecture | Zero-copy mmap, parallel scan | Full matrix in memory |
-| 250 seqs × 4.4 Mbp | **0.9 s**, 105 MB | 9.5 s, 520 MB |
-| 1000 seqs × 4.4 Mbp | **~3 s**, ~140 MB | >26 min (killed), 3+ GB |
+| 250 seqs × 4.4 Mbp | **1.72 s**, 105 MB | 9.38 s, 213 MB |
+| 1000 seqs × 4.4 Mbp | **10.27 s**, 217 MB | killed (OOM) |
 | ASC `fconst` output | :material-check:{ .snpick-yes } Built-in | :material-close: Not supported |
 | VCF output | :material-check:{ .snpick-yes } Optional | :material-check: Default |
 | Gap handling | :material-check:{ .snpick-yes } Optional (`-g`) | :material-check: Default |
