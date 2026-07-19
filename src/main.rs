@@ -350,12 +350,22 @@ fn run() -> io::Result<()> {
     }
     let vcf_path = if do_vcf {
         let out = out_path.as_deref().unwrap_or("output");
-        let vp = args.vcf_output.clone().unwrap_or_else(|| {
-            let o = Path::new(out);
-            let stem = o.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-            let parent = o.parent().unwrap_or(Path::new("."));
-            parent.join(format!("{}.vcf", stem)).to_string_lossy().into_owned()
-        });
+        let vp = match args.vcf_output.clone() {
+            Some(vp) => vp,
+            None => {
+                // Can't derive `<stem>.vcf` when the alignment streams to stdout (`-o -`);
+                // that used to fabricate a file literally named "-.vcf".
+                if out == "-" {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                        "Cannot derive a VCF path when the alignment is written to stdout (-o -); \
+                         pass --vcf-output <FILE> (or --vcf-output - to stream the VCF to stdout)."));
+                }
+                let o = Path::new(out);
+                let stem = o.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+                let parent = o.parent().unwrap_or(Path::new("."));
+                parent.join(format!("{}.vcf", stem)).to_string_lossy().into_owned()
+            }
+        };
         check_paths_differ(&args.fasta, &vp)?;
         check_paths_differ(out, &vp)?;
         Some(vp)
@@ -555,7 +565,7 @@ fn run() -> io::Result<()> {
     // Write VCF
     if let (Some(ref geno), Some(ref vp)) = (&vcf_geno, &vcf_path) {
         write_vcf(geno, num_samples, &var_positions, vp, &records, seq_length, &args.chrom, &ref_name, pos_map)?;
-        progress!(quiet, "[snpick] VCF written to {}.", vp);
+        progress!(quiet, "[snpick] VCF written to {}.", if vp == "-" { "stdout" } else { vp });
     }
 
     progress!(quiet, "[snpick] Done in {:.2}s. {} vars from {} seqs × {} pos.",

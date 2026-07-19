@@ -3,9 +3,9 @@
 //! Generates VCF v4.2 from the genotype matrix built during pass 2.
 //! Uses a per-position lookup table for O(1) allele → index mapping.
 
-use std::fs::File;
 use std::io::{self, BufWriter, Write};
 
+use crate::extract::open_sink;
 use crate::fasta::FastaRecord;
 use crate::types::{VariablePosition, IO_BUF};
 
@@ -16,8 +16,8 @@ pub fn write_vcf(
     vcf_path: &str, records: &[FastaRecord], seq_length: usize, chrom: &str, reference: &str,
     pos_map: Option<&[u32]>,
 ) -> io::Result<()> {
-    let out = File::create(vcf_path).map_err(|e| io::Error::new(e.kind(),
-        format!("Cannot create VCF '{}': {}", vcf_path, e)))?;
+    // `-` streams to stdout, like -o / --sites-output / --stats-json; otherwise a file.
+    let out = open_sink(vcf_path)?;
     let mut w = BufWriter::with_capacity(IO_BUF, out);
 
     // Header
