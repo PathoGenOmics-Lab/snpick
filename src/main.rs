@@ -231,7 +231,9 @@ fn write_stats_json(
 }
 
 /// Parse a sample-ID selector: a comma-separated list, or `@path` to read one ID per line
-/// (blank lines and `#` comments ignored).
+/// (blank lines ignored). Every non-blank line is a literal ID — sample IDs come from FASTA
+/// headers and may legitimately start with '#', so no line is treated as a comment (that would
+/// silently drop such IDs and keep the wrong sample set, unlike the comma-separated form).
 fn parse_id_set(spec: &str) -> io::Result<HashSet<Vec<u8>>> {
     let mut set = HashSet::new();
     if let Some(path) = spec.strip_prefix('@') {
@@ -239,7 +241,7 @@ fn parse_id_set(spec: &str) -> io::Result<HashSet<Vec<u8>>> {
             format!("Cannot read sample list '{}': {}", path, e)))?;
         for line in content.lines() {
             let line = line.trim();
-            if !line.is_empty() && !line.starts_with('#') {
+            if !line.is_empty() {
                 set.insert(line.as_bytes().to_vec());
             }
         }
@@ -631,6 +633,19 @@ mod tests {
         assert_eq!(lk[b'A' as usize], BIT_A);
         assert_eq!(lk[b'N' as usize], 0);
         assert_eq!(build_lookup(true)[b'-' as usize], BIT_GAP);
+    }
+
+    #[test] fn parse_id_set_at_file_keeps_hash_ids() {
+        // @file must treat every non-blank line as a literal ID — including IDs that start
+        // with '#' (valid FASTA headers) — and agree with the comma-separated form.
+        let p = format!("/tmp/snpick_idset_{}.txt", std::process::id());
+        std::fs::write(&p, "#iso1\n\n  normal  \n").unwrap();
+        let from_file = parse_id_set(&format!("@{}", p)).unwrap();
+        assert!(from_file.contains(&b"#iso1"[..]));
+        assert!(from_file.contains(&b"normal"[..]));
+        assert_eq!(from_file.len(), 2);
+        assert_eq!(from_file, parse_id_set("#iso1,normal").unwrap());
+        std::fs::remove_file(&p).ok();
     }
 
     #[test] fn test_index() {
