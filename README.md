@@ -271,7 +271,7 @@ A
 
 **stderr:**
 ```
-[snpick] Mapped 63 bytes. 3 sequences × 18 positions.
+[snpick] Mapped 90 bytes. 3 sequences × 18 positions.
 [snpick] 1 variable, 17 constant (A:4 C:4 G:4 T:5), 0 ambiguous-only, 18 total.
 [snpick] ASC fconst: 4,4,4,5
 [snpick] Done in 0.00s. 1 vars from 3 seqs × 18 pos.

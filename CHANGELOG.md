@@ -66,13 +66,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   write per genotype field — a large speedup on many-sample inputs. Output is
   byte-identical.
 
-## [1.0.1]
+## [1.0.1] - 2026-03-31
 
 - First Bioconda release.
 - Cross-platform Build & Release CI workflow (Linux/macOS, x86_64/aarch64).
 - README overhaul and benchmarks.
 
-## [1.0.0]
+## [1.0.0] - 2024-11-16
 
 - Initial release: zero-copy memory-mapped extraction of variable sites from
   FASTA alignments, optional VCF v4.2 output, and ASC `fconst` reporting.

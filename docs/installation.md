@@ -38,7 +38,7 @@ tags:
 
 === ":material-language-rust: From source"
 
-    Requires a [Rust toolchain](https://rustup.rs/) (edition 2021).
+    Requires a [Rust toolchain](https://rustup.rs/) (edition 2021, Rust 1.74 or newer).
 
     ```bash
     git clone https://github.com/PathoGenOmics-Lab/snpick.git
