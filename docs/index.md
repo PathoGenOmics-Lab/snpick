@@ -46,8 +46,8 @@ alignments ready for phylogenetic inference with ascertainment-bias correction (
 
     ---
 
-    VCF v4.2 with per-sample genotypes, a configurable contig name, reference-anchored `POS`,
-    and gap/ambiguity handling.
+    VCF v4.2 with per-sample genotypes, a configurable contig name, alignment-column `POS`
+    (or ungapped reference coordinates with `--ref-coords`), and gap/ambiguity handling.
 
 - :material-filter:{ .lg .middle } __Filter & mask__
 

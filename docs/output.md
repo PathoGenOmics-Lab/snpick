@@ -64,7 +64,7 @@ site and per-sample genotypes.
 ```text
 ##fileformat=VCFv4.2
 ##source=snpick v1.0.2
-##reference=first_sequence
+##reference=ref
 ##contig=<ID=1,length=8>
 ##INFO=<ID=NS,Number=1,Type=Integer,Description="Number of Samples With Data">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
@@ -77,10 +77,13 @@ site and per-sample genotypes.
 |---|---|
 | `CHROM` | Contig name — `1` by default, override with [`--chrom`](usage.md#vcf-coordinates) |
 | `POS` | **1-based alignment column** by default, or the ungapped reference position with `--ref-coords` |
-| `REF` | Base of the first sequence; if that base is ambiguous, the first observed base in A, C, G, T order |
+| `REF` | Base of the reference sequence (the first, or the one set by `--reference`); if that base is ambiguous, the first observed base in A, C, G, T order; if it is a gap (under `-g`), `N` |
 | `ALT` | The other observed alleles, comma-separated |
 | `INFO=NS` | Number of samples with data (a called base; gaps count only under `-g`) |
 | `FORMAT=GT` | Per-sample allele index: `0` = REF, `1..` = the *n*-th ALT, `.` = missing/ambiguous |
+
+The `##reference` header carries the **ID** of the reference sequence (the first record, or the
+one chosen with `--reference <ID>`), and `##contig` its length.
 
 !!! warning "POS is an alignment coordinate by default"
     Without `--ref-coords`, `POS` is the column index in the alignment, so when the reference
@@ -111,13 +114,15 @@ declares the `.vcf` as an output does not break.
 - **Ambiguous bases** (N, R, Y, …) are treated as **missing data**, never as alleles. A column
   is variable only if it has ≥2 standard bases (A, C, G, T). Ambiguous genotypes are written as
   `.` in the VCF.
-- **Gaps** (`-`) are **ignored by default**. With `-g` a gap becomes a 5th allele and, in the
-  VCF, is rendered as `*`.
+- **Gaps** (`-`) are **ignored by default**. With `-g` a gap becomes a 5th allele. In the VCF a
+  gap in **ALT** is written as `*`, but a gap in **REF** (the reference sequence has a gap at a
+  variable column) is written as **`N`**, since VCF v4.2 forbids `-`/`*` in the REF field. The
+  sample whose base is that gap still gets genotype `0`, so `REF=N` there marks a gap, not an N.
 
 !!! note "The `*` gap encoding"
-    Writing gaps as `*` is an alignment convention shared with snp-sites. Note that in strict
+    Writing ALT gaps as `*` is an alignment convention shared with snp-sites. Note that in strict
     VCF v4.2, `*` denotes a spanning deletion, so some downstream tools may interpret gap sites
-    accordingly.
+    accordingly. A gap in REF is written as `N` instead (`*` is not a legal REF allele).
 
 With `--iupac-mode resolve`, IUPAC codes (R = A|G, …) are resolved to their bases when
 classifying, so a column that is all-A plus one `R` becomes variable. Resolution applies only to

@@ -50,7 +50,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   records were read with misaligned byte offsets. They now use the
   newline-skipping scanner.
 - Gap reference bases produced an invalid VCF `REF` of `-` under `--include-gaps`;
-  they are now rendered as `*`, matching the `ALT` encoding.
+  the `REF` is now rendered as `N` (a valid VCF base). ALT gaps stay `*` (the snp-sites
+  convention), so `REF` and `ALT` gap encodings differ by design.
 - All-gap columns were tallied in no category under `--include-gaps`, breaking the
   reported `variable + constant + ambiguous == length` invariant.
 - Bare output filenames (`-o snps.fasta`, no directory) were rejected during path
