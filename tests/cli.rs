@@ -54,6 +54,44 @@ fn vcf_output_dash_streams_to_stdout() {
 }
 
 #[test]
+fn check_does_not_reject_output_path() {
+    // --check writes nothing, so pointing -o at the input must not trip the collision guard,
+    // matching --dry-run's behavior.
+    let d = TempDir::new("checkpath");
+    let fa = d.write("aln.fa", ALN);
+    for mode in ["--check", "--dry-run"] {
+        let o = Command::new(BIN)
+            .args(["-f", fa.to_str().unwrap(), mode, "-o", fa.to_str().unwrap(), "-q"])
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{mode} -o <input> should succeed; stderr: {}",
+            String::from_utf8_lossy(&o.stderr));
+    }
+}
+
+#[test]
+fn multiple_stdout_outputs_rejected() {
+    // Two sidecars both aimed at stdout would concatenate JSON+TSV into one unparseable stream.
+    let d = TempDir::new("multistdout");
+    let fa = d.write("aln.fa", ALN);
+    let out = d.path("out.fa");
+    let o = Command::new(BIN)
+        .args(["-f", fa.to_str().unwrap(), "-o", out.to_str().unwrap(),
+               "--stats-json", "-", "--sites-output", "-", "-q"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "stdout: {}", String::from_utf8_lossy(&o.stdout));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("stdout"));
+    // Exactly one sidecar to stdout is still fine.
+    let ok = Command::new(BIN)
+        .args(["-f", fa.to_str().unwrap(), "-o", out.to_str().unwrap(), "--stats-json", "-", "-q"])
+        .output()
+        .unwrap();
+    assert!(ok.status.success());
+    assert!(String::from_utf8_lossy(&ok.stdout).starts_with('{'));
+}
+
+#[test]
 fn vcf_derive_rejects_stdout_alignment() {
     // `-o - --vcf` cannot derive a sensible VCF filename; it must error, not write "-.vcf".
     let d = TempDir::new("vcfderive");

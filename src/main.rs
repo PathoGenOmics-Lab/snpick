@@ -332,8 +332,10 @@ fn run() -> io::Result<()> {
     let upper = build_upper();
 
     let dry_run = args.dry_run;
-    // --dry-run reports statistics only, so it writes no FASTA/VCF.
-    let do_vcf = (args.vcf || args.vcf_output.is_some()) && !dry_run;
+    // --dry-run reports statistics only; --check audits and exits. Neither writes the reduced
+    // alignment or VCF, and --check additionally writes no sidecars, so it needs no output paths.
+    let writes_align = !dry_run && !args.check;
+    let do_vcf = (args.vcf || args.vcf_output.is_some()) && writes_align;
 
     // A CHROM with whitespace would break the tab-delimited VCF columns.
     if do_vcf && (args.chrom.is_empty() || args.chrom.bytes().any(|b| b.is_ascii_whitespace())) {
@@ -341,10 +343,11 @@ fn run() -> io::Result<()> {
             "--chrom must be non-empty and contain no whitespace."));
     }
 
-    // Output path (clap guarantees it is present unless --dry-run).
-    let out_path: Option<String> = if dry_run { None } else { args.output.clone() };
+    // Output path (clap guarantees it is present unless --dry-run/--check).
+    let out_path: Option<String> = if writes_align { args.output.clone() } else { None };
 
-    // Validate paths (skip when writing nothing).
+    // Validate paths (skip when writing nothing — e.g. `--check -o input.fa` must not be
+    // rejected for a collision with a file it never touches).
     if let Some(ref out) = out_path {
         check_paths_differ(&args.fasta, out)?;
     }
@@ -371,20 +374,35 @@ fn run() -> io::Result<()> {
         Some(vp)
     } else { None };
 
-    // Sidecar outputs must not collide with the input (which is mmapped in place — overwriting
-    // it truncates the live mapping and corrupts the run) or with the other outputs.
-    for sidecar in [args.stats_json.as_deref(), args.sites_output.as_deref()].into_iter().flatten() {
-        check_paths_differ(&args.fasta, sidecar)?;
-        if let Some(ref out) = out_path {
-            check_paths_differ(out, sidecar)?;
+    // Sidecars are emitted for normal and --dry-run runs, but not --check (which returns before
+    // they are written), so only validate their paths when they will actually be produced.
+    if !args.check {
+        // Sidecar outputs must not collide with the input (which is mmapped in place —
+        // overwriting it truncates the live mapping and corrupts the run) or the other outputs.
+        for sidecar in [args.stats_json.as_deref(), args.sites_output.as_deref()].into_iter().flatten() {
+            check_paths_differ(&args.fasta, sidecar)?;
+            if let Some(ref out) = out_path {
+                check_paths_differ(out, sidecar)?;
+            }
+            if let Some(ref vp) = vcf_path {
+                check_paths_differ(vp, sidecar)?;
+            }
         }
-        if let Some(ref vp) = vcf_path {
-            check_paths_differ(vp, sidecar)?;
+        // ...and the two sidecars must not clobber each other.
+        if let (Some(a), Some(b)) = (args.stats_json.as_deref(), args.sites_output.as_deref()) {
+            check_paths_differ(a, b)?;
         }
-    }
-    // ...and the two sidecars must not clobber each other.
-    if let (Some(a), Some(b)) = (args.stats_json.as_deref(), args.sites_output.as_deref()) {
-        check_paths_differ(a, b)?;
+        // At most one output may stream to stdout; check_paths_differ exempts "-" (a file can't
+        // collide with stdout), so several "-" sinks would otherwise interleave — e.g. the JSON
+        // summary and the sites TSV concatenated onto one unparseable stream.
+        let to_stdout = [
+            out_path.as_deref(), vcf_path.as_deref(),
+            args.stats_json.as_deref(), args.sites_output.as_deref(),
+        ].into_iter().flatten().filter(|p| *p == "-").count();
+        if to_stdout > 1 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "Multiple outputs are directed to stdout ('-'); at most one may use '-'."));
+        }
     }
 
     // Map the input, transparently decompressing gzip/bgzip and reading stdin ("-") as needed.
