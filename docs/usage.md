@@ -11,8 +11,10 @@ snpick [OPTIONS] --fasta <FASTA>
 ```
 
 `-f/--fasta` is always required. `-o/--output` is required **unless** `--dry-run` or `--check`
-is given. Use `-` in place of a path for `--fasta`, `--output` or `--stats-json` to read from
-stdin / write to stdout. Run `snpick --help` for the authoritative, always-current list.
+is given. Use `-` in place of a path for `--fasta` (read from stdin) or for `--output`,
+`--vcf-output`, `--sites-output` and `--stats-json` (write to stdout). **At most one** output may
+use `-` at a time — snpick errors (exit 2) if two or more `-` sinks are given. Run
+`snpick --help` for the authoritative, always-current list.
 
 ## Core
 
@@ -31,11 +33,11 @@ stdin / write to stdout. Run `snpick --help` for the authoritative, always-curre
 | Argument | Description |
 |---|---|
 | `--vcf` | Write a VCF named after the output (`snps.fasta` → `snps.vcf`) |
-| `--vcf-output <FILE>` | Write the VCF to a custom path (implies `--vcf`) |
+| `--vcf-output <FILE>` | Write the VCF to a custom path (implies `--vcf`; `-` = stdout) |
 | `--chrom <NAME>` | `CHROM` / `##contig` name (default `1`, e.g. `NC_000962.3`) |
 | `--reference <ID>` | Sequence ID used for REF/polarity (default: first) |
 | `--ref-coords` | Write `POS` as the ungapped reference position, not the alignment column |
-| `--sites-output <TSV>` | Map each site: `alignment_pos`, `ref_pos`, `ref`, `alt` |
+| `--sites-output <TSV>` | Map each site: `alignment_pos`, `ref_pos`, `ref`, `alt` (`-` = stdout) |
 
 ## Filtering & masking
 

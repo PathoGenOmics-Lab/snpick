@@ -196,7 +196,7 @@ snpick [OPTIONS] --fasta <FASTA>
 ```
 
 `-f/--fasta` is always required; `-o/--output` is required unless `--dry-run` or `--check`.
-Use `-` for `--fasta`/`--output`/`--stats-json` to read stdin / write stdout. See `snpick --help` for the authoritative list.
+Use `-` for `--fasta` (stdin) or for any one of `--output`, `--vcf-output`, `--sites-output` or `--stats-json` (stdout; at most one at a time). See `snpick --help` for the authoritative list.
 
 **Core**
 
