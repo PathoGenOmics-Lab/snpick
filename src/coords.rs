@@ -68,10 +68,15 @@ pub fn build_mask(
         }
         Some(rp) => {
             for &(s, e) in intervals {
-                // 0-based half-open [s, e) over the reference == 1-based positions s+1 ..= e
-                let (lo, hi) = ((s + 1) as u32, e as u32);
+                // 0-based half-open [s, e) over the reference == 1-based positions s+1 ..= e.
+                // Compare in usize (saturating on the +1) so an out-of-range or degenerate
+                // interval never wraps or truncates to u32 and masks the wrong columns — the
+                // None branch above is likewise robust via `.min(seq_length)`. Reference
+                // positions are always <= MAX_SEQ_LENGTH, so widening `p` loses nothing.
+                let lo = s.saturating_add(1);
                 for (col, &p) in rp.iter().enumerate() {
-                    if p >= lo && p <= hi {
+                    let p = p as usize;
+                    if p >= lo && p <= e {
                         mask[col] = true;
                     }
                 }
@@ -105,5 +110,18 @@ mod tests {
         let rp = ref_positions(b"A-CG");
         let m = build_mask(&[(1, 2)], 4, Some(&rp));
         assert_eq!(m, vec![false, false, true, false]);
+    }
+
+    #[test]
+    fn mask_reference_out_of_range_is_noop() {
+        // Reference positions are small; an interval far beyond them (or a degenerate empty one
+        // at usize::MAX) must mask nothing. The old `as u32` cast wrapped/truncated these into
+        // the valid range and masked the wrong columns (and panicked on the +1 in debug).
+        let rp = ref_positions(b"ACGT"); // positions [1,2,3,4]
+        let huge = 1usize << 40; // ≡ 0 mod 2^32
+        assert_eq!(build_mask(&[(huge, huge + 4)], 4, Some(&rp)), vec![false; 4]);
+        assert_eq!(build_mask(&[(usize::MAX, usize::MAX)], 4, Some(&rp)), vec![false; 4]);
+        // An in-range interval still masks correctly.
+        assert_eq!(build_mask(&[(1, 3)], 4, Some(&rp)), vec![false, true, true, false]);
     }
 }
