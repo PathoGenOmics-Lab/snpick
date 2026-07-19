@@ -1,0 +1,43 @@
+name: Docs
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'docs/**'
+      - 'overrides/**'
+      - 'mkdocs.yml'
+      - 'CHANGELOG.md'
+      - '.github/CONTRIBUTING.md'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so git-revision-date-localized can read commit dates.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+          cache: pip
+
+      - name: Install Cairo/Pango (social cards)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcairo2-dev libfreetype6-dev libffi-dev \
+            libjpeg-dev libpng-dev libz-dev pngquant
+
+      - name: Install MkDocs Material and plugins
+        run: pip install -r docs/requirements.txt
+
+      - name: Build and deploy to gh-pages
+        # GitHub Actions sets CI=true, which enables the social-cards plugin.
+        run: mkdocs gh-deploy --force

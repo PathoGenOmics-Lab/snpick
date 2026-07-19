@@ -1,4 +1,4 @@
-# Pull Request Template for get_MNV
+# Pull Request Template for SNPick
 
 ## Description
 Please include a summary of the changes made in this pull request. Mention any related issues or features that are being addressed.

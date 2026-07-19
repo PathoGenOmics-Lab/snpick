@@ -57,6 +57,7 @@ pub fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, SeqL
         // Count bases
         let mut seq_len = 0usize;
         let mut line_count = 0usize;
+        let mut has_blank_line = false;
         while pos < len && data[pos] != b'>' {
             let line_start = pos;
             while pos < len && data[pos] != b'\n' && data[pos] != b'\r' { pos += 1; }
@@ -64,12 +65,17 @@ pub fn index_fasta(data: &[u8]) -> io::Result<(Vec<FastaRecord<'_>>, usize, SeqL
             if line_len > 0 {
                 seq_len += line_len;
                 line_count += 1;
+            } else {
+                has_blank_line = true;
             }
             if pos < len && data[pos] == b'\r' { pos += 1; }
             if pos < len && data[pos] == b'\n' { pos += 1; }
         }
 
-        if line_count > 1 { is_single_line = false; }
+        // A blank line inside the sequence shifts byte offsets, so the single-line
+        // fast path (data[seq_offset + pos]) would read misaligned bases. Route such
+        // records through the newline-skipping scanner instead.
+        if line_count > 1 || has_blank_line { is_single_line = false; }
 
         if records.is_empty() {
             if seq_len == 0 {

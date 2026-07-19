@@ -3,22 +3,36 @@
 //! Builds a per-position bitmask by OR-ing each sequence's nucleotide flags,
 //! then classifies positions as variable (>1 allele), constant, or ambiguous.
 
+#[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::fasta::FastaRecord;
 use crate::types::*;
 
-/// Prefault mmap pages by touching one byte per OS page.
-/// Eliminates soft page faults during the scan loop (~0.5s on 1 GB files).
+/// Minimum total scan work (records × positions) before the parallel path is
+/// worth its overhead — roughly 50 seqs × 4M bp.
+#[cfg(feature = "parallel")]
+const PARALLEL_MIN_WORK: usize = 200_000_000;
+
+/// Prefault mmap pages by touching one byte per OS page. Eliminates soft page faults during
+/// the scan loop. For large files this is parallelised so it is no longer a single-core stall
+/// (~10 s on a 20 GB alignment) ahead of the parallel scan.
 #[inline(never)]
 fn prefault(data: &[u8]) {
     const PAGE: usize = 4096;
-    let mut sum = 0u8;
-    let mut off = 0;
-    while off < data.len() {
-        sum = sum.wrapping_add(data[off]);
-        off += PAGE;
-    }
+    let n = data.len();
+    let num_pages = n.div_ceil(PAGE);
+    #[cfg(feature = "parallel")]
+    let sum: u8 = if n >= 256 * 1024 * 1024 {
+        (0..num_pages)
+            .into_par_iter()
+            .map(|p| data[p * PAGE])
+            .reduce(|| 0u8, |a, b| a.wrapping_add(b))
+    } else {
+        (0..num_pages).fold(0u8, |s, p| s.wrapping_add(data[p * PAGE]))
+    };
+    #[cfg(not(feature = "parallel"))]
+    let sum: u8 = (0..num_pages).fold(0u8, |s, p| s.wrapping_add(data[p * PAGE]));
     std::hint::black_box(sum);
 }
 
@@ -31,42 +45,63 @@ pub fn pass1_scan(
     data: &[u8], records: &[FastaRecord], seq_length: usize,
     layout: SeqLayout, lookup: &[u8; 256],
 ) -> Vec<u8> {
-    let mut bitmask = vec![0u8; seq_length];
-
     // Prefault all pages into RAM before the hot loop
     prefault(data);
 
-    // Parallel: each thread scans a chunk of sequences into its own bitmask,
-    // then merge all partial bitmasks with OR. Threads share the mmap read-only.
-    let num_threads = rayon::current_num_threads().min(records.len());
-
-    // Parallelism only pays off when there's enough work per thread.
-    // Threshold: total scan work > ~200M bases (e.g., 50 seqs × 4M bp).
-    let total_work = records.len() * seq_length;
-    if num_threads <= 1 || total_work < 200_000_000 {
-        // Sequential fallback for small inputs
-        scan_sequential(data, records, seq_length, layout, lookup, &mut bitmask);
-    } else {
-        // Split records into chunks, one per thread
-        let chunk_size = records.len().div_ceil(num_threads);
-        let partial_bitmasks: Vec<Vec<u8>> = records
-            .par_chunks(chunk_size)
-            .map(|chunk| {
-                let mut local_bm = vec![0u8; seq_length];
-                scan_sequential(data, chunk, seq_length, layout, lookup, &mut local_bm);
-                local_bm
-            })
-            .collect();
-
-        // Merge: OR all partial bitmasks into the final one
-        for partial in &partial_bitmasks {
-            for (bm, &p) in bitmask.iter_mut().zip(partial.iter()) {
-                *bm |= p;
-            }
+    // Parallelism only pays off when there's enough work per thread (~200M bases). Small
+    // inputs (and builds without the `parallel` feature, e.g. wasm) scan sequentially.
+    #[cfg(feature = "parallel")]
+    {
+        let num_threads = rayon::current_num_threads().min(records.len());
+        let total_work = records.len() * seq_length;
+        if num_threads > 1 && total_work >= PARALLEL_MIN_WORK {
+            return scan_parallel(data, records, seq_length, layout, lookup, num_threads);
         }
     }
-
+    let mut bitmask = vec![0u8; seq_length];
+    scan_sequential(data, records, seq_length, layout, lookup, &mut bitmask);
     bitmask
+}
+
+/// Parallel scan: each thread scans a disjoint chunk of records into its own
+/// bitmask, then all partials are merged with OR. OR is commutative and
+/// associative over the disjoint chunks, so the result is byte-for-byte
+/// identical to a sequential scan.
+#[cfg(feature = "parallel")]
+fn scan_parallel(
+    data: &[u8], records: &[FastaRecord], seq_length: usize,
+    layout: SeqLayout, lookup: &[u8; 256], num_threads: usize,
+) -> Vec<u8> {
+    let chunk_size = records.len().div_ceil(num_threads);
+    let partial_bitmasks: Vec<Vec<u8>> = records
+        .par_chunks(chunk_size)
+        .map(|chunk| {
+            let mut local_bm = vec![0u8; seq_length];
+            scan_sequential(data, chunk, seq_length, layout, lookup, &mut local_bm);
+            local_bm
+        })
+        .collect();
+
+    let mut bitmask = vec![0u8; seq_length];
+    for partial in &partial_bitmasks {
+        for (bm, &p) in bitmask.iter_mut().zip(partial.iter()) {
+            *bm |= p;
+        }
+    }
+    bitmask
+}
+
+/// Branchless nucleotide → bitmask for the standard A/C/G/T(+gap) alphabet. Unlike a table
+/// gather, this auto-vectorises (SSE2/AVX2/NEON). `gap_mask` is 1 when gaps are counted, else 0.
+/// Byte-identical to the strict lookup table for the ACGT(+gap) case.
+#[inline(always)]
+fn acgt_bits(b: u8, gap_mask: u8) -> u8 {
+    let u = b & !0x20; // fold letter case (A/a -> A)
+    (u == b'A') as u8
+        | (((u == b'C') as u8) << 1)
+        | (((u == b'G') as u8) << 2)
+        | (((u == b'T') as u8) << 3)
+        | ((((b == b'-') as u8) & gap_mask) << 4)
 }
 
 /// Sequential scan of a set of records into a bitmask.
@@ -74,11 +109,21 @@ fn scan_sequential(
     data: &[u8], records: &[FastaRecord], seq_length: usize,
     layout: SeqLayout, lookup: &[u8; 256], bitmask: &mut [u8],
 ) {
+    // The branchless kernel is only valid for the standard alphabet; IUPAC-resolve tables
+    // (where e.g. 'R' maps to a nonzero bitmask) fall back to the general gather.
+    let fast = lookup[b'R' as usize] == 0;
+    let gap_mask = if lookup[b'-' as usize] != 0 { 1u8 } else { 0u8 };
     if layout.single_line {
         for rec in records {
             let seq = &data[rec.seq_offset..rec.seq_offset + seq_length];
-            for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
-                *bm_byte |= lookup[seq_byte as usize];
+            if fast {
+                for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
+                    *bm_byte |= acgt_bits(seq_byte, gap_mask);
+                }
+            } else {
+                for (bm_byte, &seq_byte) in bitmask.iter_mut().zip(seq.iter()) {
+                    *bm_byte |= lookup[seq_byte as usize];
+                }
             }
         }
     } else {
@@ -118,6 +163,7 @@ pub fn analyze(
             else if bits & BIT_C != 0 { cs.c += 1; }
             else if bits & BIT_G != 0 { cs.g += 1; }
             else if bits & BIT_T != 0 { cs.t += 1; }
+            else { ambiguous += 1; } // all-gap column (BIT_GAP only) under --include-gaps
         } else {
             ambiguous += 1;
         }
@@ -125,4 +171,55 @@ pub fn analyze(
 
     let num_variable = vars.len();
     (vars, SiteCounts { constant: cs, variable: num_variable, ambiguous })
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fasta::index_fasta;
+
+    #[test]
+    fn acgt_bits_matches_lookup() {
+        // The branchless kernel must be byte-identical to the strict lookup table.
+        for gap in [false, true] {
+            let lk = build_lookup(gap);
+            let gm = if gap { 1u8 } else { 0u8 };
+            for b in 0u16..256 {
+                assert_eq!(acgt_bits(b as u8, gm), lk[b as usize], "byte {}", b);
+            }
+        }
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn parallel_matches_sequential() {
+        // The parallel chunk/merge path is the production path for real
+        // (whole-genome) inputs but is gated behind a size threshold that no
+        // small test reaches. Drive it directly and assert it equals a
+        // sequential scan byte-for-byte.
+        let mut fa = Vec::new();
+        for i in 0..97usize {
+            fa.extend_from_slice(format!(">s{}\n", i).as_bytes());
+            let mut seq = vec![b'A'; 40];
+            seq[i % 40] = b'C';
+            seq[(i * 7) % 40] = b'G';
+            seq[(i * 13) % 40] = b'T';
+            fa.extend_from_slice(&seq);
+            fa.push(b'\n');
+        }
+        let lk = build_lookup(false);
+        let (recs, sl, layout) = index_fasta(&fa).unwrap();
+
+        let mut seq_bm = vec![0u8; sl];
+        scan_sequential(&fa, &recs, sl, layout, &lk, &mut seq_bm);
+
+        let threads = rayon::current_num_threads().min(recs.len()).max(2);
+        let par_bm = scan_parallel(&fa, &recs, sl, layout, &lk, threads);
+
+        assert_eq!(seq_bm, par_bm);
+    }
 }

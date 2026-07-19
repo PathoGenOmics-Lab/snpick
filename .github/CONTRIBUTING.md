@@ -15,10 +15,12 @@ Thank you for your interest in contributing to **snpick**! We welcome contributi
 - [Code of Conduct](#code-of-conduct)
 
 ## Project Description
-`snpick` is a tool designed to identify **Multi-Nucleotide Variants (MNVs)** within the same codon in genomic sequences. MNVs occur when multiple Single Nucleotide Variants (SNVs) are present within the same codon, leading to the translation of a different amino acid. This tool addresses limitations in current annotation programs like **ANNOVAR** or **SnpEff**, which are primarily designed to work with individual SNVs and might overlook the actual amino acid changes resulting from MNVs.
+`snpick` is a fast, memory-efficient tool for extracting variable (SNP) sites from whole-genome **FASTA alignments**. It produces reduced alignments ready for phylogenetic inference with ascertainment-bias correction (ASC) in **IQ-TREE** and **RAxML**, and can optionally emit a VCF file. Its zero-copy, memory-mapped architecture scales to thousands of genomes in seconds with minimal RAM, where matrix-in-memory tools such as **snp-sites** struggle.
 
-### Current Limitations
-**IMPORTANT**: This script currently works only with **SNVs** against a reference genome. Insertions and deletions that modify the reading frame are not supported yet.
+### Scope
+- Input is a **FASTA alignment**: every sequence must have the same length. The first sequence is used as the reference for `REF`/`ALT` polarization.
+- Standard bases `A/C/G/T` (case-insensitive) define variability; IUPAC ambiguous bases (N, R, Y, …) are treated as missing data rather than alleles.
+- Gaps (`-`) are ignored by default and can be included as a 5th character with `-g`.
 
 ## How to Contribute
 We appreciate all contributions, whether it’s fixing bugs, proposing new features, improving the documentation, or suggesting a new direction for the tool.

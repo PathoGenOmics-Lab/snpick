@@ -1,0 +1,10 @@
+target/
+fuzz/target/
+site/
+docs/
+benchmarks/
+logo/
+.git/
+.github/
+.cache/
+bindings/*/target/

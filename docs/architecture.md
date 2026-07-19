@@ -1,0 +1,72 @@
+---
+tags:
+  - internals
+---
+
+# Architecture
+
+```mermaid
+flowchart LR
+    A([Input FASTA]) -->|mmap once| B[Index records]
+    B --> C[Pass 1: bitmask scan]
+    C -->|parallel · OR-merge| D[Analyze / classify]
+    D --> E{Variable columns}
+    B --> F[Pass 2: sparse extract]
+    E --> F
+    F --> G([Reduced FASTA])
+    F --> H([VCF v4.2])
+```
+
+SNPick memory-maps the input once and shares it, read-only, across two passes — the **full
+alignment matrix is never materialized in memory**; sequence bytes are read straight from the
+shared mmap. (Compressed or piped input is first spooled to a temp file so it can be mapped, and
+the single reference sequence is copied out once for polarity — both O(L), not O(N×L).)
+
+## Indexing
+
+The FASTA is scanned once to record, for each sequence, the byte offset of its data and its
+length as zero-copy slices into the mmap. All sequences must have the same length (an alignment
+requirement); a mismatch is a hard error. The indexer detects whether the file is single-line or
+wrapped (multi-line) so later passes can pick the fastest access strategy.
+
+## Pass 1 — bitmask scan
+
+Each position accumulates a 5-bit mask (`A`, `C`, `G`, `T`, and gap) by OR-ing every sequence's
+base at that column. Once built, each column is classified:
+
+- **variable** — more than one allele present,
+- **constant** — exactly one standard base,
+- **ambiguous-only** — no standard base (all N/gap without `-g`).
+
+For large inputs the scan runs in parallel: records are split into disjoint chunks, each thread
+fills its own bitmask, and the partials are merged with OR. Because OR is commutative and
+associative, the parallel result is **byte-for-byte identical** to a sequential scan — thread
+count never affects output. Small inputs fall back to a single-threaded scan to avoid overhead.
+
+Before the hot loop, SNPick prefaults the mapped pages and hints the OS that access is sequential,
+eliminating soft page faults on multi-gigabyte files.
+
+## Pass 2 — sparse extraction
+
+Only the variable columns are read back, via sparse random access into the mmap, and written to
+the reduced FASTA. When a VCF is requested the same pass fills a compact genotype matrix, which
+is then emitted as VCF rows assembled in a reused byte buffer (avoiding a formatted write per
+genotype).
+
+## Design notes
+
+- **Lookup tables** — 256-byte arrays give O(1) nucleotide classification and case conversion.
+- **Auto-vectorized scan** — the single-line hot loop uses a branchless A/C/G/T(+gap) kernel that
+  LLVM vectorizes (SSE2/AVX2/NEON); a test asserts it is byte-identical to the table lookup.
+- **Zero-copy** — IDs, descriptions, and sequence bytes are slices into the single mmap.
+- **O(L) memory (reduced-alignment path)** — for FASTA/PHYLIP/NEXUS output the working set scales
+  with alignment length, not the number of sequences, which is what lets SNPick handle thousands
+  of genomes with a small footprint. Requesting a VCF (`--vcf`) additionally holds a genotype
+  matrix of `variable_sites × samples` bytes (so it grows with sequence count, up to O(L×N)),
+  bounded by a 4 GB guard above which SNPick errors instead of allocating.
+
+The core is a **library crate** (`snpick`) of focused modules — `fasta` (indexing), `scan`
+(pass 1 + classification), `extract` (pass 2), `vcf`, `filter` (per-site counting), `coords`
+(reference coordinates & BED masking), `audit` (composition), `input` (gzip/stdin) and `types` —
+with the CLI as a thin binary on top. `rayon` and `memmap2` sit behind default-on `parallel` and
+`mmap` features, so the library also builds for `wasm32`.

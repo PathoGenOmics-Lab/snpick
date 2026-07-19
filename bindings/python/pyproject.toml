@@ -1,0 +1,24 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "snpick"
+version = "1.0.2"
+description = "Fast extraction of variable sites from FASTA alignments"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Paula Ruiz-Rodriguez" }]
+classifiers = [
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.urls]
+Homepage = "https://github.com/PathoGenOmics-Lab/snpick"
+Documentation = "https://pathogenomics-lab.github.io/snpick/"
+
+[tool.maturin]
+module-name = "snpick"
+features = ["pyo3/extension-module"]

@@ -10,14 +10,28 @@ pub const BIT_G: u8 = 0b00100;
 pub const BIT_T: u8 = 0b01000;
 pub const BIT_GAP: u8 = 0b10000;
 
-/// Maximum alignment length (prevents OOM on malicious input).
-pub const MAX_SEQ_LENGTH: usize = 10_000_000_000;
+/// Maximum alignment length. Kept below `u32::MAX` so alignment columns and reference
+/// positions (VCF `POS`) always fit in a `u32` without truncation; also bounds memory on
+/// malicious input (the bitmask alone is one byte per column).
+pub const MAX_SEQ_LENGTH: usize = 4_000_000_000;
 
 /// Maximum VCF genotype matrix size in bytes.
 pub const MAX_VCF_GENO_BYTES: usize = 4_000_000_000;
 
 /// I/O buffer size for BufWriter (16 MB).
 pub const IO_BUF: usize = 16 * 1024 * 1024;
+
+/// Output format for the reduced alignment.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    /// FASTA (default).
+    #[default]
+    Fasta,
+    /// Relaxed PHYLIP (IQ-TREE / RAxML).
+    Phylip,
+    /// NEXUS DATA block (MrBayes / PAUP* / SplitsTree).
+    Nexus,
+}
 
 /// Whether all sequences are single-line (no embedded newlines).
 /// When true, `data[seq_offset + pos]` gives the base at `pos` directly.
@@ -69,6 +83,29 @@ pub fn build_lookup(include_gaps: bool) -> [u8; 256] {
     t[b'G' as usize] = BIT_G; t[b'g' as usize] = BIT_G;
     t[b'T' as usize] = BIT_T; t[b't' as usize] = BIT_T;
     if include_gaps { t[b'-' as usize] = BIT_GAP; }
+    t
+}
+
+/// Build a nucleotide → bitmask lookup that also resolves IUPAC ambiguity codes to their
+/// constituent bases (R = A|G, etc.). Used only for pass-1 classification under
+/// `--iupac-mode resolve`; NS counting and REF selection keep the strict table.
+pub fn build_iupac_lookup(include_gaps: bool) -> [u8; 256] {
+    let mut t = build_lookup(include_gaps);
+    let mut set = |c: u8, bits: u8| {
+        t[c as usize] = bits;
+        t[(c + 32) as usize] = bits; // lowercase
+    };
+    set(b'R', BIT_A | BIT_G);
+    set(b'Y', BIT_C | BIT_T);
+    set(b'S', BIT_C | BIT_G);
+    set(b'W', BIT_A | BIT_T);
+    set(b'K', BIT_G | BIT_T);
+    set(b'M', BIT_A | BIT_C);
+    set(b'B', BIT_C | BIT_G | BIT_T);
+    set(b'D', BIT_A | BIT_G | BIT_T);
+    set(b'H', BIT_A | BIT_C | BIT_T);
+    set(b'V', BIT_A | BIT_C | BIT_G);
+    // N and other fully-ambiguous codes stay 0.
     t
 }
 
