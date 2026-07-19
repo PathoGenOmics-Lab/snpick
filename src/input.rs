@@ -90,11 +90,69 @@ pub fn map_input(path: &str) -> io::Result<MappedInput> {
     let is_gzip = n == 2 && magic == [0x1f, 0x8b];
 
     if is_gzip {
-        let inf = File::open(path)?;
-        let (mmap, tp) = spool_to_temp(MultiGzDecoder::new(BufReader::new(inf)))?;
+        // Chain the peeked magic back onto the same handle rather than reopening the path.
+        // Reopening rewinds a regular file but NOT a non-seekable path (process substitution
+        // `<(gzip -c ...)` or a FIFO), where the magic bytes are already consumed — the decoder
+        // would then start mid-stream and fail with "invalid gzip header". This mirrors the
+        // stdin branch and works for both seekable and non-seekable inputs.
+        let head = std::io::Cursor::new(magic[..n].to_vec());
+        let stream = head.chain(BufReader::new(f));
+        let (mmap, tp) = spool_to_temp(MultiGzDecoder::new(stream))?;
         Ok(MappedInput { mmap, temp: Some(tp) })
     } else {
+        // Mmap maps from offset 0 regardless of the read position left by read_magic.
         let mmap = unsafe { Mmap::map(&f)? };
         Ok(MappedInput { mmap, temp: None })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::map_input;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::fs::File;
+    use std::io::Write;
+
+    fn gzip(bytes: &[u8]) -> Vec<u8> {
+        let mut e = GzEncoder::new(Vec::new(), Compression::fast());
+        e.write_all(bytes).unwrap();
+        e.finish().unwrap()
+    }
+
+    #[test]
+    fn gzip_regular_file_decodes() {
+        let raw = b">s1\nATGC\n>s2\nATCC\n";
+        let p = std::env::temp_dir().join(format!("snpick-gz-{}.fa.gz", std::process::id()));
+        std::fs::write(&p, gzip(raw)).unwrap();
+        let m = map_input(p.to_str().unwrap()).unwrap();
+        assert_eq!(&m.mmap[..], raw);
+        std::fs::remove_file(&p).ok();
+    }
+
+    // A gzip stream delivered through a non-seekable FIFO must still decode. On the old code the
+    // gzip branch reopened the path, which on a pipe yields a fresh handle whose magic bytes were
+    // already consumed, so decoding failed with "invalid gzip header".
+    #[cfg(unix)]
+    #[test]
+    fn gzip_over_fifo_is_rewind_safe() {
+        use std::process::Command;
+        let raw = b">s1\nATGC\n>s2\nATCC\n";
+        let gz = gzip(raw);
+        let fifo = std::env::temp_dir().join(format!("snpick-fifo-{}.gz", std::process::id()));
+        let _ = std::fs::remove_file(&fifo);
+        assert!(Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+
+        let wpath = fifo.clone();
+        let writer = std::thread::spawn(move || {
+            // File::create on a FIFO blocks until the reader opens; then stream and close.
+            if let Ok(mut f) = File::create(&wpath) {
+                let _ = f.write_all(&gz);
+            }
+        });
+        let m = map_input(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(&m.mmap[..], raw);
+        writer.join().unwrap();
+        std::fs::remove_file(&fifo).ok();
     }
 }
