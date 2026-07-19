@@ -17,8 +17,10 @@ flowchart LR
     F --> H([VCF v4.2])
 ```
 
-SNPick memory-maps the input once and shares it, read-only, across two passes — **no copies of
-the sequence data are ever made**.
+SNPick memory-maps the input once and shares it, read-only, across two passes — the **full
+alignment matrix is never materialized in memory**; sequence bytes are read straight from the
+shared mmap. (Compressed or piped input is first spooled to a temp file so it can be mapped, and
+the single reference sequence is copied out once for polarity — both O(L), not O(N×L).)
 
 ## Indexing
 
@@ -57,8 +59,11 @@ genotype).
 - **Auto-vectorized scan** — the single-line hot loop uses a branchless A/C/G/T(+gap) kernel that
   LLVM vectorizes (SSE2/AVX2/NEON); a test asserts it is byte-identical to the table lookup.
 - **Zero-copy** — IDs, descriptions, and sequence bytes are slices into the single mmap.
-- **O(L) memory** — the working set scales with alignment length, not with the number of
-  sequences, which is what lets SNPick handle thousands of genomes with a small footprint.
+- **O(L) memory (reduced-alignment path)** — for FASTA/PHYLIP/NEXUS output the working set scales
+  with alignment length, not the number of sequences, which is what lets SNPick handle thousands
+  of genomes with a small footprint. Requesting a VCF (`--vcf`) additionally holds a genotype
+  matrix of `variable_sites × samples` bytes (so it grows with sequence count, up to O(L×N)),
+  bounded by a 4 GB guard above which SNPick errors instead of allocating.
 
 The core is a **library crate** (`snpick`) of focused modules — `fasta` (indexing), `scan`
 (pass 1 + classification), `extract` (pass 2), `vcf`, `filter` (per-site counting), `coords`
