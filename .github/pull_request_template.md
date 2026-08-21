@@ -1,45 +1,33 @@
-# Pull Request Template for SNPick
+<!--
+Fill in what applies and delete what does not. A short pull request needs a
+short description; nobody is asking for an essay to fix a typo.
+-->
 
-## Description
-Please include a summary of the changes made in this pull request. Mention any related issues or features that are being addressed.
+## What this changes
 
-- **What is the motivation for this change?**
-- **Which issue does this address?** (Link to the relevant GitHub issue if applicable)
+<!-- One or two sentences. What is different after this is merged? -->
 
-## Type of Change
-Please delete options that are not relevant:
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Documentation update
-- [ ] Refactor
-- [ ] Other (please describe):
+## Why
+
+<!-- The problem it solves. Link an issue with "Closes #123" if there is one. -->
+
+## How it was verified
+
+<!--
+The important part, and the one a reviewer cannot reconstruct.
+
+Not "it should work", but what you ran and what it printed. For example: the
+test you added and the fact that it fails without the fix, the alignment you ran
+through it and the VCF or PHYLIP you got before and after, or the benchmark whose
+numbers changed.
+
+If it is a change that CI already covers, say which check covers it.
+-->
 
 ## Checklist
-Please ensure your pull request meets the following requirements:
 
-- [ ] My code follows the coding guidelines of this project.
-- [ ] I have performed a self-review of my code.
-- [ ] I have commented my code, particularly in hard-to-understand areas.
-- [ ] I have made corresponding changes to the documentation.
-- [ ] My changes do not introduce new warnings or errors.
-- [ ] I have added tests that prove my fix is effective or that my feature works.
-- [ ] All new and existing tests pass.
-
-## Additional Information
-Please provide any additional information that is relevant to this pull request. This can include benchmarking data, notes on design decisions, or information on how to test the changes effectively.
-
-## Screenshots (if applicable)
-If your changes involve UI updates, please include screenshots here.
-
-## Related Issues
-Link to related issues here:
-
-- Fixes # (issue)
-- Resolves # (issue)
-- Closes # (issue)
-
-## Reviewer Checklist
-For maintainers and reviewers:
-- [ ] Code is well-documented and follows project standards.
-- [ ] Unit tests and integration tests are sufficient.
-- [ ] Changes are in line with the project's overall goals and quality standards.
+- [ ] `cargo test` passes and `cargo clippy -- -D warnings` is clean.
+- [ ] It still builds on the minimum supported Rust version (1.85).
+- [ ] New behaviour has a test, or I have said above why it does not.
+- [ ] Output stays byte-for-byte compatible, or the change to it is described above.
+- [ ] Documentation under `docs/` and the `CHANGELOG` are updated if the change is user-visible.

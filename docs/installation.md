@@ -20,7 +20,7 @@ tags:
 === ":material-download: Pre-built binary"
 
     Grab the binary for your platform from the
-    [latest release](https://github.com/PathoGenOmics-Lab/snpick/releases/latest) — Linux
+    [latest release](https://github.com/PathoGenOmics-Lab/snpick/releases/latest): Linux
     (`x86_64`, `aarch64`) and macOS (`x86_64`, `aarch64`), with `SHA256SUMS.txt` published for
     verification:
 
@@ -38,7 +38,7 @@ tags:
 
 === ":material-language-rust: From source"
 
-    Requires a [Rust toolchain](https://rustup.rs/) (edition 2021, Rust 1.74 or newer).
+    Requires a [Rust toolchain](https://rustup.rs/) (edition 2021, Rust 1.85 or newer).
 
     ```bash
     git clone https://github.com/PathoGenOmics-Lab/snpick.git
@@ -58,7 +58,7 @@ tags:
       -f /data/alignment.fasta -o /data/snps.fasta
     ```
 
-    An Apptainer/Singularity image is available too — see the
+    An Apptainer/Singularity image is available too; see the
     [`snpick.def`](https://github.com/PathoGenOmics-Lab/snpick/blob/main/snpick.def) recipe.
 
 ## Library & bindings

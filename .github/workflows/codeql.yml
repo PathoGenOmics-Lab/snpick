@@ -1,0 +1,68 @@
+name: CodeQL
+
+# Static analysis over what this repository is written in. Nothing here looked at
+# the code this way before: clippy checks the shape of a line and the test suite
+# checks the answer, while these queries follow a value across functions and
+# files and ask where an unchecked one arrives somewhere it matters.
+#
+# Two languages, which is all of them:
+#
+#   rust      the extractor, the whole of it
+#   actions   the workflows themselves, including this one
+#
+# That second one is not a curiosity. These queries know about unsafe uses of
+# `pull_request_target`, which is the trigger labeler.yml runs on, and about
+# script injection through untrusted context values. Reasoning that a workflow is
+# safe is exactly the kind of reasoning worth having checked by something that is
+# not the person who wrote it.
+#
+# On pushes to main and on pull requests, with no schedule. GitHub's own default
+# setup adds a weekly run; this does not, in keeping with every other workflow
+# here except the issue sweep, which has nothing but time to hang off.
+#
+# `build-mode: none` reads the source without compiling it. It is what makes this
+# take a minute rather than a full release build, and it is the documented mode
+# for the languages here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push makes an older analysis irrelevant, the same as CI.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    name: Analyse ${{ matrix.language }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
