@@ -38,6 +38,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.74.0
+      # The version lives in `toolchain`, not in the action's ref. Pinned as
+      # `@1.74.0` the Dependabot actions updater treats it as a tag to bump, and
+      # a "routine" bump to a newer ref would quietly build this job on a
+      # different compiler while still calling itself the MSRV check. Kept in the
+      # input, the minimum supported Rust version only moves when this line does.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.74.0"
       - name: Build on the minimum supported Rust version
         run: cargo build --verbose

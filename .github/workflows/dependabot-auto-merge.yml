@@ -1,0 +1,85 @@
+name: Dependabot auto-merge
+
+# Merges Dependabot's routine updates once CI has passed, and never touches a
+# major one.
+#
+# The point of the split is that a minor or patch bump that survives the whole
+# suite (clippy with warnings denied, the test suite on Linux and macOS across
+# x86_64 and aarch64, and the minimum-supported-Rust build) has already been
+# examined more carefully than a person would examine it by eye, while a major
+# bump changes APIs and wants a person to look.
+#
+# Triggered by the pull request itself, not by a schedule.
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    name: Merge routine updates once CI is green
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    steps:
+      - name: Read what this pull request updates
+        id: metadata
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # The rule, decided once.
+      #
+      # It used to be written twice, once negated for the step that explains
+      # itself, and the two halves drift the moment the first is edited: a
+      # grouped patch matches the merge step and the "left alone" step at the
+      # same time, so it would merge and announce that it had not. One step
+      # decides, the other two read the answer.
+      #
+      # Named rather than excluded: merge when the pull request says in so many
+      # words that it is a patch or a minor, or when it is a `-routine` group,
+      # which the configuration already restricts to those two.
+      #
+      # Asking instead whether the update was "not major" lets one through. A
+      # requirement bump can report no update type at all, and an empty string is
+      # not equal to major, so the rule would say yes to a major on its first
+      # day. Anything this cannot positively identify still waits for a person.
+      #
+      # A group reports "the highest semver change being made by this PR", so a
+      # group carrying one major is a major here.
+      - name: Decide whether this one may merge itself
+        id: decide
+        env:
+          GROUP: ${{ steps.metadata.outputs.dependency-group }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+        run: |
+          set -euo pipefail
+          may_merge=false
+          case "$GROUP" in
+            *-routine) may_merge=true ;;
+          esac
+          case "$UPDATE_TYPE" in
+            version-update:semver-patch|version-update:semver-minor) may_merge=true ;;
+          esac
+          # Printed because a decision nobody can read is a decision nobody can
+          # correct: this line is what a later surprise gets diagnosed from.
+          echo "group='${GROUP}' update-type='${UPDATE_TYPE}' -> may-merge=${may_merge}"
+          echo "may-merge=${may_merge}" >> "$GITHUB_OUTPUT"
+
+      - name: Queue the merge
+        if: steps.decide.outputs.may-merge == 'true'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Say why this one was left alone
+        if: steps.decide.outputs.may-merge != 'true'
+        run: |
+          gh pr comment "$PR_URL" --body \
+            "Left for review. Only a \`-routine\` group, or an update that identifies itself as patch or minor, merges on its own once CI passes. This one is a major update or does not say which it is."
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

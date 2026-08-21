@@ -1,0 +1,36 @@
+name: Dependency review
+
+# Stops a pull request that would bring in a dependency with a known
+# vulnerability, which is the half of the problem Dependabot does not cover.
+# Dependabot tells you about a vulnerable dependency you already have; this
+# refuses the one you are about to add, while refusing it is still free.
+#
+# It compares the dependency graph of the base against the head, so it only ever
+# has an opinion about what the pull request itself introduces. Everything
+# already in the tree is somebody else's conversation.
+#
+# `moderate` rather than the default `low`: a low severity advisory on a
+# transitive build dependency is worth reading and is not worth blocking a merge
+# on, and a gate that blocks for things nobody acts on stops being read.
+
+on:
+  pull_request
+
+permissions:
+  contents: read
+  # For the summary comment it leaves when it refuses one.
+  pull-requests: write
+
+jobs:
+  review:
+    name: No new dependency with a known vulnerability
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: moderate
+          # Only when it has something to say. A summary on every pull request
+          # is a summary nobody reads by the third one.
+          comment-summary-in-pr: on-failure

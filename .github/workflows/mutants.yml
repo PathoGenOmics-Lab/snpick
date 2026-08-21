@@ -1,0 +1,89 @@
+name: Mutation testing (advisory)
+
+# `cargo mutants` changes the source (flips a comparison, replaces a function
+# body with a default) and reports whether the test suite notices. A surviving
+# mutant is a piece of logic no test distinguishes: either a test is missing, or
+# the logic does nothing, and both are worth knowing.
+#
+# It is run by hand rather than on every push, because it builds and tests once
+# per mutant. It never fails the build: a surviving mutant is a question to look
+# at, not a defect.
+#
+# The scope is the default, which is this crate's own source. It is split across
+# four shards so the run finishes in parallel rather than one long job, and a
+# final job puts the pieces back together.
+
+on:
+  workflow_dispatch:
+
+# It reads the repository, mutates a copy of the source in a scratch directory
+# and uploads a report as an artifact. It writes nothing back here.
+permissions:
+  contents: read
+
+jobs:
+  mutants:
+    name: Shard ${{ matrix.shard }} of 0 to 3
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Zero-indexed, which the flag's own help does not say: it gives `1/4`
+        # as the example. Numbering these 1 to 4 would quietly skip shard 0 and
+        # run an empty shard 4, so they are listed 0 to 3 to match `--shard k/4`.
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+      - name: Run mutation testing
+        # Surviving mutants exit non-zero; that is a report, not a failure.
+        continue-on-error: true
+        run: cargo mutants --no-shuffle --shard ${{ matrix.shard }}/4
+      - name: Upload this shard's report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mutants-report-${{ matrix.shard }}
+          path: mutants.out/
+          retention-days: 30
+
+  summary:
+    name: Surviving mutants, all shards
+    needs: mutants
+    # The shards are advisory and one may fail on its own; the report is still
+    # worth assembling from the ones that finished, and it says which did not.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Collect the shard reports
+        uses: actions/download-artifact@v7
+        with:
+          pattern: mutants-report-*
+          path: shards
+      - name: Write the summary
+        run: |
+          set -euo pipefail
+          {
+            echo "## Surviving mutants"
+            echo
+            arrived=$(find shards -maxdepth 1 -type d -name 'mutants-report-*' | wc -l)
+            echo "Reports from ${arrived} of 4 shards."
+            echo
+            # Sorted so the same set of survivors reads the same way between
+            # runs: the shards finish in whatever order they finish.
+            if find shards -name missed.txt -size +0 | read -r _; then
+              echo "Logic no test distinguishes. Each line is a question: is a test"
+              echo "missing, or does the code not do anything?"
+              echo
+              echo '```'
+              find shards -name missed.txt -exec cat {} + | LC_ALL=C sort
+              echo '```'
+            else
+              echo "None: every mutant in the examined code was caught."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

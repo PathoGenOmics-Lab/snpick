@@ -1,0 +1,84 @@
+# Dependency updates.
+#
+# Shaped to keep the updates and drop the noise. Left at Dependabot's defaults it
+# opens one pull request per dependency and leads with major bumps, which is how
+# a routine week turns into a wall of pull requests nobody reads. This keeps the
+# same coverage with a smaller footprint:
+#
+#   * monthly, not weekly
+#   * grouped, so one pull request carries a whole ecosystem's routine bumps
+#   * majors kept apart, in their own single pull request, because those are the
+#     ones that change APIs and want a person
+#
+# The minor and patch group is merged automatically once CI passes; see
+# .github/workflows/dependabot-auto-merge.yml. The major group never is.
+#
+# `schedule` here is Dependabot's own timer, not a cron in GitHub Actions. The
+# only workflow that runs on a schedule in this repository is the issue sweep.
+#
+# Security updates are a separate mechanism, enabled in the repository settings,
+# and are unaffected by any of this: a vulnerable dependency still gets its own
+# pull request the day the advisory lands, major or not.
+
+version: 2
+
+updates:
+  # The Rust crate: the CLI and its library, which share one lockfile. The
+  # bindings under bindings/ and the fuzz targets are separate crates with their
+  # own lockfiles and are left out on purpose; they track this crate rather than
+  # the registry, and a bump that mattered would arrive through it.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "rust"]
+    commit-message:
+      prefix: "cargo"
+    groups:
+      cargo-routine:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      cargo-major:
+        patterns: ["*"]
+        update-types: ["major"]
+
+  # The documentation site's build dependencies (docs/requirements.txt).
+  - package-ecosystem: pip
+    directory: "/docs"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    labels: ["dependencies", "documentation"]
+    commit-message:
+      prefix: "docs"
+    groups:
+      docs-routine:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      docs-major:
+        patterns: ["*"]
+        update-types: ["major"]
+
+  # The actions the workflows themselves pin. These go stale silently: a
+  # deprecated runner image or a Node version dropped from an action is only
+  # noticed when a job starts warning, or fails.
+  #
+  # The MSRV job in rust.yml pins its compiler through the action's `toolchain`
+  # input, not through the action's ref, so nothing here can move the minimum
+  # supported Rust version by "updating" a pin.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    labels: ["dependencies", "github-actions"]
+    commit-message:
+      prefix: "actions"
+    groups:
+      actions-routine:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+      actions-major:
+        patterns: ["*"]
+        update-types: ["major"]

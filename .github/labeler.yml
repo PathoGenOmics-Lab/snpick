@@ -1,0 +1,73 @@
+# Which part of the project a pull request touches, worked out from the files it
+# changes. The labels exist so that "what changed in the VCF path" is a question
+# the pull request list can answer; applying them by hand is how they stop being
+# applied.
+#
+# This covers pull requests only. The issue templates here are plain Markdown and
+# do not label their own issues, so those are labelled by hand or left bare.
+#
+# Format is actions/labeler v5, which is not v4's: a bare list of globs under the
+# label name silently matches nothing.
+
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/main.rs"
+          - "src/lib.rs"
+          - "src/scan.rs"
+          - "src/extract.rs"
+          - "src/fasta.rs"
+          - "src/input.rs"
+          - "src/types.rs"
+
+vcf:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/vcf.rs"
+
+filters:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/filter.rs"
+          - "src/audit.rs"
+          - "src/coords.rs"
+
+bindings:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "bindings/**"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "overrides/**"
+          - "mkdocs.yml"
+          - "README.md"
+          - "CHANGELOG.md"
+
+packaging:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "Cargo.toml"
+          - "Dockerfile"
+          - "snpick.def"
+          - ".github/workflows/release.yml"
+          - ".github/workflows/docker.yml"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+          - "benches/**"
+          - "benchmarks/**"
+          - "fuzz/**"
+
+# Everything under .github, not a list of the files there. Naming them one by
+# one leaves .github/labeler.yml itself uncovered, so the pull request adding a
+# rule to this file would arrive with no label, which is a small thing that says
+# exactly how the list would have aged.
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
