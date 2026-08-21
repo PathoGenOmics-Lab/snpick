@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Least privilege: both jobs only check out the repository and build, so the
+# GITHUB_TOKEN needs nothing beyond read access to the contents.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
