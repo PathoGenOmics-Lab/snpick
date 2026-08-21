@@ -27,7 +27,7 @@ If it is a change that CI already covers, say which check covers it.
 ## Checklist
 
 - [ ] `cargo test` passes and `cargo clippy -- -D warnings` is clean.
-- [ ] It still builds on the minimum supported Rust version (1.74).
+- [ ] It still builds on the minimum supported Rust version (1.85).
 - [ ] New behaviour has a test, or I have said above why it does not.
 - [ ] Output stays byte-for-byte compatible, or the change to it is described above.
 - [ ] Documentation under `docs/` and the `CHANGELOG` are updated if the change is user-visible.

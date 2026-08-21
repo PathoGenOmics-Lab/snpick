@@ -2,7 +2,7 @@
 name = "snpick"
 version = "1.0.2"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.85"
 authors = [
     "Paula Ruiz-Rodriguez <paula.ruiz.rodriguez@csic.es>",
     "Mireia Coscolla",

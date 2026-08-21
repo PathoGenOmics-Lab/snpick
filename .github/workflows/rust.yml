@@ -34,17 +34,22 @@ jobs:
         run: cargo build --release
 
   msrv:
-    name: MSRV 1.74
+    name: MSRV 1.85
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       # The version lives in `toolchain`, not in the action's ref. Pinned as
-      # `@1.74.0` the Dependabot actions updater treats it as a tag to bump, and
+      # `@1.85.0` the Dependabot actions updater treats it as a tag to bump, and
       # a "routine" bump to a newer ref would quietly build this job on a
       # different compiler while still calling itself the MSRV check. Kept in the
       # input, the minimum supported Rust version only moves when this line does.
+      #
+      # 1.85 is the floor because a dependency is published against the 2024
+      # edition, which Cargo only understands from 1.85 on. The committed
+      # Cargo.lock's version 4 format also needs at least 1.78, so 1.85 clears
+      # both.
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.74.0"
+          toolchain: "1.85.0"
       - name: Build on the minimum supported Rust version
         run: cargo build --verbose
