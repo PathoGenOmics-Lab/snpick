@@ -18,7 +18,7 @@ jobs:
       matrix:
         os: [ ubuntu-latest, ubuntu-24.04-arm, macos-14, macos-15-intel ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -37,7 +37,7 @@ jobs:
     name: MSRV 1.85
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The version lives in `toolchain`, not in the action's ref. Pinned as
       # `@1.85.0` the Dependabot actions updater treats it as a tag to bump, and
       # a "routine" bump to a newer ref would quietly build this job on a
