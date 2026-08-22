@@ -5,14 +5,22 @@ site_author: Paula Ruiz-Rodriguez
 repo_url: https://github.com/PathoGenOmics-Lab/snpick
 repo_name: PathoGenOmics-Lab/snpick
 edit_uri: edit/main/docs/
-copyright: Copyright &copy; Paula Ruiz-Rodriguez &amp; Mireia Coscolla — I²SysBio (UV-CSIC)
+copyright: Copyright &copy; Paula Ruiz-Rodriguez &amp; Mireia Coscolla, I²SysBio (UV-CSIC)
 
 theme:
   name: material
   custom_dir: overrides
-  logo: assets/logo.svg
+  # Baked PNGs, not the SVGs: the wordmark is set in the "Sixtyfour Convergence"
+  # pixel font, which a visitor's browser will not have, so an <img> of the SVG
+  # would fall back to a plain face. The PNGs carry the pixel shapes as raster.
+  # The logo partial in overrides/ swaps a light and a dark PNG by scheme.
+  logo: assets/logo.png
   favicon: assets/logo.png
   language: en
+  # Three states: the site follows the reader's system setting until they choose
+  # otherwise, and their choice is remembered. Primary is white on light and
+  # black on dark so the header is a neutral ground; the accent is teal, and the
+  # stylesheet pins the exact link colour that clears contrast in each scheme.
   palette:
     - media: "(prefers-color-scheme)"
       toggle:
@@ -20,28 +28,29 @@ theme:
         name: Switch to light mode
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: deep purple
-      accent: pink
+      primary: white
+      accent: teal
       toggle:
-        icon: material/brightness-7
+        icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep purple
-      accent: pink
+      primary: black
+      accent: teal
       toggle:
-        icon: material/brightness-4
-        name: Switch to system preference
+        icon: material/brightness-auto
+        name: Follow the system setting
   font:
-    text: Inter
-    code: JetBrains Mono
+    text: IBM Plex Sans
+    code: IBM Plex Mono
   features:
     - announce.dismiss
     - navigation.instant
     - navigation.instant.prefetch
     - navigation.instant.progress
-    - navigation.tabs
-    - navigation.tabs.sticky
+    # The nav is grouped into a handful of sections shown open in the sidebar,
+    # the way get_MNV lays its out; tabs are deliberately left off so the whole
+    # map stays visible on a site this small.
     - navigation.sections
     - navigation.indexes
     - navigation.top
@@ -66,15 +75,18 @@ theme:
 
 nav:
   - Home: index.md
-  - Installation: installation.md
-  - Usage: usage.md
-  - Tutorial: tutorials/tutorial.ipynb
-  - Output formats: output.md
-  - Benchmarks: benchmarks.md
-  - Architecture: architecture.md
-  - Contributing: contributing.md
-  - Changelog: changelog.md
-  - Tags: tags.md
+  - Get started:
+      - Installation: installation.md
+      - Usage: usage.md
+      - Tutorial: tutorials/tutorial.ipynb
+  - Reference:
+      - Output formats: output.md
+      - Benchmarks: benchmarks.md
+      - Architecture: architecture.md
+  - Project:
+      - Contributing: contributing.md
+      - Changelog: changelog.md
+      - Tags: tags.md
 
 markdown_extensions:
   - abbr
@@ -142,7 +154,7 @@ plugins:
       # are installed), so local builds don't require the native dependencies.
       enabled: !ENV [CI, false]
       cards_layout_options:
-        background_color: "#5e35b1"
+        background_color: "#004d40"
   - minify:
       minify_html: true
 

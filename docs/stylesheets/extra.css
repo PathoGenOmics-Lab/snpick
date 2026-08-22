@@ -1,73 +1,452 @@
-/* ------------------------------------------------------------------ *
- * SNPick — brand palette & polish
- * ------------------------------------------------------------------ */
+/* The look of this site, on top of Material for MkDocs.
+ *
+ * Ported from the get_MNV documentation so the two projects read as one family:
+ * one accent colour that only ever means "this is a link or a control",
+ * hairlines instead of boxes, and headings that separate sections on their own
+ * so the prose does not have to. Every colour is checked against its own
+ * background, in both schemes, at the 4.5:1 that AA asks of body text.
+ */
+
+/* ---------------------------------------------------------------- tokens -- */
 
 :root {
-  --md-primary-fg-color:        #5e35b1;
-  --md-primary-fg-color--light: #7e57c2;
-  --md-primary-fg-color--dark:  #4527a0;
-  --md-accent-fg-color:         #ff0077;
-  --snpick-alt:                 #6ee36a;
+  /* Teal is the accent, used for links, controls and focus and for nothing
+   * else, so that seeing it always means the same thing. */
+  --sp-accent: #007a6c;          /* 5.25:1 on white */
+  --sp-accent-strong: #00695f;   /* 6.59:1 on white */
+  --sp-hairline: rgba(0, 0, 0, 0.09);
+  --sp-hairline-strong: rgba(0, 0, 0, 0.16);
+  --sp-surface: #f6f8f8;
+  --sp-surface-sunken: #f0f3f3;
 }
 
+/* The dark scheme is chosen, not derived: the same teal would be 2.0:1 on the
+ * slate ground, so it is brightened until it clears the bar there too. */
 [data-md-color-scheme="slate"] {
-  --md-accent-fg-color: #ff4d97;
+  --sp-accent: #00ccb8;          /* 7.92:1 on the slate ground */
+  --sp-accent-strong: #5fe3d3;
+  --sp-hairline: rgba(255, 255, 255, 0.12);
+  --sp-hairline-strong: rgba(255, 255, 255, 0.22);
+  --sp-surface: rgba(255, 255, 255, 0.035);
+  --sp-surface-sunken: rgba(0, 0, 0, 0.22);
 }
 
-/* Brand gradient on the primary heading of the landing page */
-.md-typeset h1#snpick {
-  background: linear-gradient(90deg, var(--md-primary-fg-color--light), var(--snpick-alt));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font-weight: 800;
+/* Handing the accent to Material takes more than declaring it later: its palette
+ * sheet sets the dark-scheme link colour on two attributes at once, so it
+ * outranks any single-attribute rule. The attribute is repeated here only to
+ * match that weight; it selects exactly the same element. */
+[data-md-color-scheme="default"][data-md-color-scheme],
+[data-md-color-scheme="slate"][data-md-color-scheme] {
+  --md-typeset-a-color: var(--sp-accent);
+  --md-accent-fg-color: var(--sp-accent-strong);
+}
+
+/* ---------------------------------------------------------------- header -- */
+
+/* A neutral header needs an edge, or it floats: a hairline while at the top, a
+ * shadow once the page scrolls under it. */
+.md-header {
+  border-bottom: 1px solid var(--sp-hairline);
+  box-shadow: none;
+}
+
+.md-header--shadow {
+  border-bottom-color: transparent;
+  box-shadow: 0 0 0.2rem rgba(0, 0, 0, 0.07), 0 0.2rem 0.4rem rgba(0, 0, 0, 0.07);
+}
+
+/* The wordmark is 2:1 wide, so at Material's square logo size it is set in type
+ * too small to read. Give it the width it needs. */
+.md-header__button.md-logo :is(img, svg) {
+  height: 1.6rem;
+  width: auto;
+}
+
+/* Masthead logo: two files swapped by the chosen theme, so the wordmark's dark
+ * lettering stays legible on the white header in light mode, and its light twin
+ * shows on the black header in dark mode. The partial in overrides/ emits both;
+ * this hides whichever does not match. */
+.md-header__button.md-logo .sp-logo {
+  display: inline-block;
+}
+
+[data-md-color-scheme="default"] .md-header__button.md-logo .sp-logo--dark,
+[data-md-color-scheme="slate"] .md-header__button.md-logo .sp-logo--light {
+  display: none;
+}
+
+.md-header__title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* The search field reads as a control rather than a hole in the header. */
+.md-search__form {
+  border: 1px solid var(--sp-hairline-strong);
+  border-radius: 0.3rem;
+  background-color: var(--sp-surface);
+}
+
+.md-search__form:hover {
+  background-color: var(--sp-surface-sunken);
+}
+
+[data-md-toggle="search"]:checked ~ .md-header .md-search__form {
+  border-color: var(--sp-accent);
+}
+
+/* ------------------------------------------------------------ navigation -- */
+
+/* The group names are landmarks, not links: small, spaced and uppercase, set
+ * apart from the pages under them. */
+.md-nav__item--section > .md-nav__link {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+  margin-top: 0.9rem;
+}
+
+/* Where you are, shown by a mark in the margin rather than by colour alone. */
+.md-nav__link--active {
+  font-weight: 600;
+}
+
+.md-sidebar--primary .md-nav__list .md-nav__link--active {
+  border-left: 2px solid var(--sp-accent);
+  margin-left: -0.6rem;
+  padding-left: calc(0.6rem - 2px);
+}
+
+.md-nav--secondary .md-nav__title {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+  box-shadow: none;
+}
+
+/* -------------------------------------------------------------- headings -- */
+
+/* A page is scanned before it is read, so the headings carry the structure: the
+ * title sits large and tight, and every section after it opens on a rule that
+ * runs the width of the column. */
+.md-typeset h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.15;
   letter-spacing: -0.02em;
+  color: var(--md-default-fg-color);
+  margin-bottom: 1.2rem;
 }
 
-/* Cards: subtle lift on hover */
-.md-typeset .grid.cards > ul > li,
-.md-typeset .grid > .card {
-  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
-}
-.md-typeset .grid.cards > ul > li:hover {
-  border-color: var(--md-accent-fg-color);
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.12);
-  transform: translateY(-2px);
-}
-
-/* Centre the hero logo and give it breathing room */
-.md-typeset h1#snpick + p img,
-.md-typeset p > img[alt="SNPick logo"] {
-  display: block;
-  margin: 1.2rem auto 0.6rem;
+.md-typeset h2 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin-top: 2.4rem;
+  padding-top: 1.2rem;
+  border-top: 1px solid var(--sp-hairline);
 }
 
-/* Tighten the comparison / option tables */
-.md-typeset table:not([class]) th {
-  background: var(--md-primary-fg-color);
+/* The first heading of a page has the title above it, which is separation
+ * enough. */
+.md-typeset h1 + h2 {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 1.6rem;
+}
+
+.md-typeset h3 {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  margin-top: 1.8rem;
+}
+
+/* The anchor mark belongs to whoever wants to copy a link, not to everyone
+ * reading: it stays reachable by keyboard but out of the way otherwise. */
+.md-typeset :is(h1, h2, h3, h4, h5, h6) .headerlink {
+  opacity: 0;
+  transition: opacity 125ms;
+}
+
+.md-typeset :is(h1, h2, h3, h4, h5, h6):hover .headerlink,
+.md-typeset :is(h1, h2, h3, h4, h5, h6) .headerlink:focus {
+  opacity: 1;
+}
+
+.md-typeset h4 {
+  font-weight: 600;
+}
+
+.md-typeset {
+  line-height: 1.7;
+}
+
+/* ------------------------------------------------------------------ code -- */
+
+/* A hairline gives a block an edge without the weight of a filled box, and
+ * matches the tables and figures beside it. */
+.md-typeset pre > code {
+  border: 1px solid var(--sp-hairline);
+  border-radius: 0.3rem;
+}
+
+.md-typeset code {
+  border-radius: 0.2rem;
+}
+
+.md-typeset :not(pre) > code {
+  background-color: var(--sp-surface-sunken);
+}
+
+/* ------------------------------------------------------------- callouts --- */
+
+/* Toned down from Material's tinted box to a hairline with a coloured edge, so
+ * an admonition reads as an aside instead of an alarm. */
+.md-typeset :is(.admonition, details) {
+  border: 1px solid var(--sp-hairline);
+  border-left-width: 3px;
+  border-radius: 0.3rem;
+  box-shadow: none;
+  font-size: 0.75rem;
+}
+
+.md-typeset :is(.admonition-title, summary) {
+  font-weight: 600;
+}
+
+/* --------------------------------------------------------------- buttons -- */
+
+.md-typeset .md-button {
+  border-radius: 0.3rem;
+  border-width: 1px;
+  font-weight: 600;
+  padding: 0.5em 1.2em;
+  transition: background-color 125ms, color 125ms, border-color 125ms;
+}
+
+/* Each scheme names the label that clears its own fill: white on the light
+ * teal, near-black on the bright teal of the dark scheme. */
+.md-typeset .md-button--primary {
+  background-color: var(--sp-accent);
+  border-color: var(--sp-accent);
   color: #fff;
 }
 
-/* "Last updated" footer meta a touch quieter */
+[data-md-color-scheme="slate"] .md-typeset .md-button--primary {
+  color: #10131a;
+}
+
+.md-typeset .md-button:is(:focus, :hover) {
+  background-color: var(--sp-accent-strong);
+  border-color: var(--sp-accent-strong);
+  color: #fff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset .md-button:is(:focus, :hover) {
+  color: #10131a;
+}
+
+/* ------------------------------------------------------------------ hero -- */
+
+/* The wordmark opens the landing page. Two files rather than one that decides
+ * for itself: Material swaps them on the reader's chosen theme, which is not
+ * always the system's. */
+.md-typeset .sp-hero .sp-wordmark {
+  border: none;
+  border-radius: 0;
+  display: block;
+  width: min(19rem, 82%);
+  height: auto;
+  margin: 0 0 0.6rem -0.35rem;
+}
+
+/* Material hides the variant that does not match the chosen theme with a
+ * display: none on img[src$="#only-light"]. Setting display: block above
+ * outranks it, so the hiding is restated here at a weight that survives. */
+[data-md-color-scheme="slate"] .md-typeset .sp-hero img[src$="#only-light"],
+[data-md-color-scheme="default"] .md-typeset .sp-hero img[src$="#only-dark"] {
+  display: none;
+}
+
+/* The title is set in type under the mark, which already says the name. Kept
+ * for the document outline and for anyone not seeing the image, and taken out
+ * of the visual flow. */
+.md-typeset .sp-hero h1 {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  margin: 0;
+}
+
+.sp-hero {
+  border-bottom: 1px solid var(--sp-hairline);
+  margin-bottom: 2rem;
+  padding-bottom: 1.8rem;
+}
+
+.md-typeset .sp-hero .sp-hero__lead {
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--md-default-fg-color);
+  max-width: 34em;
+}
+
+.md-typeset .sp-hero .sp-hero__actions {
+  margin-top: 1.4rem;
+}
+
+.md-typeset .sp-hero .sp-hero__actions .md-button + .md-button {
+  margin-left: 0.4rem;
+}
+
+/* ---------------------------------------------------------------- footer -- */
+
+.md-footer-meta {
+  border-top: 1px solid var(--sp-hairline);
+}
+
 .md-source-file {
   opacity: 0.85;
 }
 
-/* Green "supported" checks in comparison tables */
+/* -------------------------------------------------------- content pieces -- */
+
+.md-typeset__table {
+  width: 100%;
+}
+
+.md-typeset table:not([class]) {
+  display: table;
+  width: 100%;
+}
+
+/* A floor on the first column keeps a flag or column name from being squeezed
+ * to two characters a line, without forcing a whole message onto one line. */
+.md-typeset table:not([class]) td:first-child,
+.md-typeset table:not([class]) th:first-child {
+  min-width: 12rem;
+}
+
+.md-typeset table:not([class]) td:first-child code {
+  overflow-wrap: break-word;
+}
+
+/* A wide table scrolls inside its own box rather than pushing the page
+ * sideways: the page body must never scroll horizontally. */
+.md-typeset__scrollwrap {
+  overflow-x: auto;
+}
+
+.md-typeset table:not([class]) code {
+  font-size: 0.78rem;
+  word-break: normal;
+}
+
+/* Reference pages are mostly tables and code; give them a little more measure
+ * on a wide screen. */
+@media screen and (min-width: 76.25em) {
+  .md-grid {
+    max-width: 68rem;
+  }
+}
+
+/* Landing-page cards: give the whole card a hover state, so it reads as one
+ * target rather than a paragraph with a link in it. */
+.md-typeset .grid.cards > ul > li {
+  border: 1px solid var(--sp-hairline);
+  border-radius: 0.4rem;
+  padding: 1rem 1.2rem;
+  transition: border-color 125ms, box-shadow 125ms, transform 125ms;
+}
+
+.md-typeset .grid.cards > ul > li:hover {
+  border-color: var(--sp-accent);
+  box-shadow: 0 0.1rem 0.5rem rgba(0, 0, 0, 0.06);
+  transform: translateY(-1px);
+}
+
+.md-typeset .grid.cards > ul > li > hr {
+  display: none;
+}
+
+.md-typeset .grid.cards > ul > li > p:first-child {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--md-default-fg-color);
+  margin-bottom: 0.4rem;
+}
+
+.md-typeset .grid.cards > ul > li > p:last-child {
+  margin-bottom: 0;
+}
+
+/* Tables get the same hairline treatment as everything else: a tinted head,
+ * rules between rows, and no box around the outside. */
+.md-typeset table:not([class]) {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  font-size: 0.74rem;
+}
+
+.md-typeset table:not([class]) th {
+  background-color: var(--sp-surface);
+  border-bottom: 1px solid var(--sp-hairline-strong);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--md-default-fg-color--light);
+  white-space: nowrap;
+}
+
+.md-typeset table:not([class]) td {
+  border-top: 1px solid var(--sp-hairline);
+  vertical-align: top;
+}
+
+.md-typeset table:not([class]) tr:hover td {
+  background-color: var(--sp-surface);
+}
+
+/* A "supported" tick in the comparison table, kept green so it still reads as a
+ * yes next to the teal links rather than merging with them. */
 .md-typeset .snpick-yes {
-  color: #2e9e2e;
+  color: #16a34a;
 }
+
 [data-md-color-scheme="slate"] .md-typeset .snpick-yes {
-  color: var(--snpick-alt);
+  color: #4ade80;
 }
 
-/* Larger brand logo in the header */
-.md-header__button.md-logo {
-  padding: 0.1rem 0.2rem;
-}
-.md-header__button.md-logo img,
-.md-header__button.md-logo svg {
-  height: 2.1rem;
-  width: auto;
+/* A screenshot or diagram gets a frame so it finds its edges on the page. */
+.md-typeset figure img,
+.md-typeset p > img {
+  border: 1px solid var(--sp-hairline);
+  border-radius: 0.4rem;
 }
 
+/* The hero wordmark carries no frame: it has no edges of its own to lose. */
+.md-typeset .sp-hero .sp-wordmark {
+  border: none;
+}
+
+.md-typeset figure figcaption {
+  font-size: 0.7rem;
+  color: var(--md-default-fg-color--light);
+  margin-top: 0.6rem;
+}
+
+.md-typeset kbd {
+  font-size: 0.75em;
+}

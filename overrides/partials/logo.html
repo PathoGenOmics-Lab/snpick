@@ -1,0 +1,24 @@
+{#-
+  Masthead logo, overridden so the wordmark adapts to the colour scheme.
+
+  Material's default emits a single <img>, which cannot change with the theme.
+  The wordmark has dark lettering that reads on the white light-mode header and
+  vanishes on the black dark-mode one, so both variants are emitted here and the
+  stylesheet (.sp-logo--light / .sp-logo--dark) hides whichever does not match
+  the chosen scheme.
+-#}
+{% if config.theme.logo %}
+  <img
+    src="{{ 'assets/logo.png' | url }}"
+    alt="{{ config.site_name }}"
+    class="sp-logo sp-logo--light"
+  >
+  <img
+    src="{{ 'assets/logo-dark.png' | url }}"
+    alt="{{ config.site_name }}"
+    class="sp-logo sp-logo--dark"
+  >
+{% else %}
+  {% set icon = config.theme.icon.logo or "material/library" %}
+  {% include ".icons/" ~ icon ~ ".svg" %}
+{% endif %}
