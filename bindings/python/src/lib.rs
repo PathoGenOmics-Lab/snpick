@@ -33,7 +33,7 @@ fn stats(py: Python<'_>, path: &str, include_gaps: bool) -> PyResult<Py<PyDict>>
     let rs = get_ref_seq(data, &records[0], seq_len, layout);
     let (v, sc) = analyze(&bm, &rs, &lookup, include_gaps);
 
-    let d = PyDict::new_bound(py);
+    let d = PyDict::new(py);
     d.set_item("sequences", records.len())?;
     d.set_item("alignment_length", seq_len)?;
     d.set_item("variable_sites", v.len())?;
