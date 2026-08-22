@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="logo/SNPick.png" alt="SNPick logo" width="750" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/SNPick-dark.png" />
+    <img src="logo/SNPick.png" alt="SNPick logo" width="750" />
+  </picture>
 </p>
 
 <div align="center">

@@ -3,24 +3,31 @@ tags:
   - overview
 ---
 
+<div class="sp-hero" markdown>
+
+![SNPick](assets/logo.png#only-light){ .sp-wordmark }
+![SNPick](assets/logo-dark.png#only-dark){ .sp-wordmark }
+
 # SNPick
 
-<p align="center" markdown>
-  ![SNPick logo](assets/logo.png){ width="600" }
+<p class="sp-hero__lead">
+Fast, memory-efficient extraction of variable sites from FASTA alignments.
 </p>
 
-**Fast, memory-efficient extraction of variable sites from FASTA alignments.**
-
+<div class="sp-hero__actions" markdown>
 [Get started :material-rocket-launch:](installation.md){ .md-button .md-button--primary }
 [Usage reference :material-console:](usage.md){ .md-button }
 [View on GitHub :fontawesome-brands-github:](https://github.com/PathoGenOmics-Lab/snpick){ .md-button }
+</div>
+
+</div>
 
 SNPick extracts variable (SNP) sites from whole-genome FASTA alignments. It produces reduced
 alignments ready for phylogenetic inference with ascertainment-bias correction (ASC) in
 **IQ-TREE** and **RAxML**, and optionally generates VCF files.
 
 !!! question "Why not snp-sites?"
-    snp-sites works well for small datasets but struggles with large alignments — it loads the
+    snp-sites works well for small datasets but struggles with large alignments: it loads the
     whole matrix into memory and scales poorly. SNPick uses a zero-copy, memory-mapped
     architecture that handles thousands of genomes in seconds with minimal RAM.
 
@@ -32,7 +39,7 @@ alignments ready for phylogenetic inference with ascertainment-bias correction (
 
     ---
 
-    A reduced FASTA with just the informative columns — a drop-in, much smaller input for
+    A reduced FASTA with just the informative columns, a drop-in, much smaller input for
     phylogenetics.
 
 - :material-tree:{ .lg .middle } __ASC-ready__
@@ -54,7 +61,7 @@ alignments ready for phylogenetic inference with ascertainment-bias correction (
     ---
 
     Per-site missingness / MAC / MAF / allele filters, BED region masking and sample
-    selection — without breaking `fconst`.
+    selection, without breaking `fconst`.
 
 - :material-pipe:{ .lg .middle } __Pipeline-native__
 
@@ -111,5 +118,5 @@ If you use SNPick in your research, please cite:
 }
 ```
 
-<sub>Paula Ruiz-Rodriguez and Mireia Coscolla — Institute for Integrative Systems Biology,
+<sub>Paula Ruiz-Rodriguez and Mireia Coscolla, Institute for Integrative Systems Biology,
 I²SysBio, University of Valencia-CSIC, Valencia, Spain.</sub>
