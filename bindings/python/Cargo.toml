@@ -14,5 +14,5 @@ name = "snpick"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py38"] }
 snpick_core = { path = "../..", package = "snpick" }
